@@ -27,3 +27,7 @@ logs/
 ssh remote.txt
 token.txt
 node_key.pem
+
+# Test/debug files
+srvlist.txt
+.workbuddy/tmp_lib/

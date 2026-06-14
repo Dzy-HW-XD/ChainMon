@@ -230,17 +230,19 @@ class MonitorClient:
         """扫描机房内网设备（简化版）"""
         client_config = self.config.get("client", {})
         scan_subnets = client_config.get("scan_subnets", [])
-        
+
         logger.info("扫描网络设备，网段: %s", scan_subnets)
-        
-        # 示例：添加一些测试设备
-        example_devices = [
-            {"ip": "10.0.1.100", "name": "server-1"},
-            {"ip": "10.0.1.101", "name": "server-2"}
-        ]
-        
-        self.managed_devices = example_devices
-        logger.info("扫描完成，发现设备数: %d", len(self.managed_devices))
+
+        # 如果没有配置扫描网段，只添加本机作为监控对象
+        if not scan_subnets:
+            self.managed_devices = [{"ip": "localhost", "name": "local-node"}]
+            logger.info("未配置扫描网段，仅监控本机")
+            return
+
+        # 扫描网段内的IPMI设备（简化版：这里只添加本机，实际应实现ARP扫描+IPMI探测）
+        # TODO: 实现真正的网段扫描
+        self.managed_devices = [{"ip": "localhost", "name": "local-node"}]
+        logger.info("扫描完成，发现设备数: %d (含本机)", len(self.managed_devices))
 
     def _create_and_propose_block(self):
         """创建并提议新区块"""
