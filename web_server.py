@@ -464,6 +464,37 @@ def create_app() -> Flask:
         history = _global_client.ipmi_executor.get_command_history(target_ip)
         return jsonify({"history": history})
 
+    @app.route('/api/audit/log')
+    def api_audit_log():
+        """获取审计日志（从区块链中提取操作记录）"""
+        if not _global_client:
+            return jsonify({"error": "client not initialized"}), 500
+
+        # 从区块链中提取所有包含操作数据的记录
+        entries = []
+        chain = _global_client.blockchain.chain
+        data_type_filter = request.args.get('data_type', type=int)
+
+        for block in chain:
+            for data in block.data_list:
+                # 如果指定了data_type过滤
+                if data_type_filter is not None and data.data_type != data_type_filter:
+                    continue
+                entries.append({
+                    "block_height": block.block_height,
+                    "block_hash": block.current_hash[:16] + "...",
+                    "data_type": data.data_type,
+                    "device_ip": data.device_ip,
+                    "content": data.content[:500] if data.content else "",
+                    "operate_user": data.operate_user,
+                    "timestamp": data.timestamp,
+                })
+
+        # 按时间倒序
+        entries.sort(key=lambda x: x["timestamp"], reverse=True)
+        limit = request.args.get('limit', default=50, type=int)
+        return jsonify({"entries": entries[:limit], "total": len(entries)})
+
     return app
 
 

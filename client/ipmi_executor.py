@@ -101,14 +101,15 @@ class IPMIExecutor:
                 "-H", target_ip,
                 "-U", self.ipmi_username,
                 "-P", self.ipmi_password,
+                "-o", "5",  # 连接超时5秒，避免无BMC设备卡住
             ]
             
             # 解析ipmi_command，添加到命令末尾
             cmd_parts = ipmi_command.strip().split()
             full_cmd.extend(cmd_parts)
             
-            # 执行
-            result = subprocess.run(full_cmd, capture_output=True, text=True, timeout=60)
+            # 执行（subprocess超时10秒，ipmitool连接超时5秒）
+            result = subprocess.run(full_cmd, capture_output=True, text=True, timeout=10)
             
             if result.returncode == 0:
                 cmd_record.status = "success"
