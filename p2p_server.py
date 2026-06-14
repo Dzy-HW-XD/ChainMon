@@ -30,26 +30,36 @@ def create_app() -> Flask:
         """处理区块提议"""
         if not _global_client:
             return jsonify({"error": "客户端未初始化"}), 500
-        
+
         try:
             block_data = request.json
             from blockchain.block import Block
             block = Block.from_dict(block_data)
-            
+
             # 接收区块提议
             success, reason = _global_client.consensus.receive_block_proposal(
                 block, block_data.get("proposer_id", "unknown")
             )
-            
+
             if success:
                 # 自动投票同意（简化：收到提议自动同意）
                 _global_client.consensus.vote_block(
                     block.current_hash, _global_client.node_id, True
                 )
+                # 广播自己的投票给其他节点
+                _global_client.network.broadcast_vote(
+                    block.current_hash, _global_client.node_id, True
+                )
+                # 检查区块是否已确认，若确认则加入本地链
+                confirmed_block = _global_client.consensus.get_confirmed_block(block.current_hash)
+                if confirmed_block:
+                    _global_client.blockchain.add_block(confirmed_block)
+                    logger.info("区块 %s 已确认并写入本地链", block.current_hash[:16])
+
                 return jsonify({"status": "accepted", "block_hash": block.current_hash})
             else:
                 return jsonify({"status": "rejected", "reason": reason}), 400
-                
+
         except Exception as e:
             logger.error("处理区块提议失败: %s", e)
             return jsonify({"error": str(e)}), 500
@@ -69,6 +79,11 @@ def create_app() -> Flask:
             success = _global_client.consensus.vote_block(block_hash, voter_id, is_approved)
             
             if success:
+                # 检查区块是否已确认，若确认则加入本地链
+                confirmed_block = _global_client.consensus.get_confirmed_block(block_hash)
+                if confirmed_block:
+                    _global_client.blockchain.add_block(confirmed_block)
+                    logger.info("区块 %s 已确认并写入本地链（投票触发）", block_hash[:16])
                 return jsonify({"status": "voted"})
             else:
                 return jsonify({"status": "vote_failed"}), 400

@@ -62,7 +62,12 @@ class MonitorClient:
         # 后台线程引用
         self.p2p_thread = None
         self.web_thread = None
-        
+
+        # 链同步相关
+        self.sync_counter = 0
+        self.last_sync_time = 0
+        self.sync_interval = 60  # 每60秒尝试一次链同步
+
         # 注册信号处理
         signal.signal(signal.SIGINT, self._signal_handler)
         signal.signal(signal.SIGTERM, self._signal_handler)
@@ -112,8 +117,13 @@ class MonitorClient:
         # 启动后台线程
         self._start_background_threads()
         
+        # 等待P2P服务器就绪后，尝试从对等节点同步链
+        logger.info("等待P2P服务器就绪...")
+        self.stop_event.wait(3)
+        self._sync_chain_from_peers()
+        
         try:
-            # 主循环：数据采集 + 区块创建
+            # 主循环：数据采集 + 区块创建 + 定期链同步
             while not self.stop_event.is_set():
                 # 1. 采集数据
                 self._collect_data_cycle()
@@ -124,6 +134,12 @@ class MonitorClient:
                 
                 # 3. 清理过期数据
                 self.consensus.cleanup_old_pending(3600)
+                
+                # 4. 定期链同步（每sync_interval秒执行一次）
+                current_time = time.time()
+                if current_time - self.last_sync_time >= self.sync_interval:
+                    self._sync_chain_from_peers()
+                    self.last_sync_time = current_time
                 
                 # 等待下一个采集周期
                 collect_interval = self.config.get("client", {}).get("collect_interval", 30)
@@ -248,11 +264,90 @@ class MonitorClient:
         # 自己先投票（同意）
         self.consensus.vote_block(block_hash, self.node_id, True)
         
+        # 广播自己的投票给其他节点
+        self.network.broadcast_vote(block_hash, self.node_id, True)
+        
+        # 检查区块是否已确认（单节点场景下立即确认）
+        confirmed_block = self.consensus.get_confirmed_block(block_hash)
+        if confirmed_block:
+            self.blockchain.add_block(confirmed_block)
+            logger.info("区块 %s 已确认并写入本地链（提议者自确认）", block_hash[:16])
+        
         # 切换到下一个记账节点
         next_node = self.consensus.next_leader()
         logger.info("区块提议完成，下一记账节点: %s", next_node)
         
         return new_block
+
+    def _sync_chain_from_peers(self):
+        """
+        从对等节点同步区块链
+        遍历所有在线节点，找到链最长的节点进行增量同步
+        """
+        online_peers = self.network.get_online_peers()
+        if not online_peers:
+            logger.debug("无在线对等节点，跳过链同步")
+            return
+
+        local_height = len(self.blockchain.chain) - 1
+        best_peer = None
+        best_height = local_height
+
+        # 第一步：查询每个节点的高度，找到链最长的节点
+        for peer in online_peers:
+            try:
+                import requests
+                url = peer.get_url("/p2p/chain/sync")
+                resp = requests.get(url, timeout=10)
+                if resp.status_code == 200:
+                    remote_height = resp.json().get("chain_height", 0)
+                    if remote_height > best_height:
+                        best_height = remote_height
+                        best_peer = peer
+            except Exception:
+                continue
+
+        if best_peer is None:
+            logger.debug("本地链已是最新，无需同步（高度: %d）", local_height)
+            return
+
+        # 第二步：从最长链节点获取完整链数据并同步
+        logger.info("发现更高链: 节点 %s 高度 %d > 本地高度 %d，开始同步...",
+                    best_peer.node_id, best_height, local_height)
+        remote_chain_data = self.network.request_chain_sync(best_peer.node_id)
+        if remote_chain_data is None:
+            logger.warning("从节点 %s 同步链数据失败", best_peer.node_id)
+            return
+
+        # 第三步：解析远程链并执行同步
+        try:
+            from blockchain.block import Block
+            remote_chain = [Block.from_dict(b) for b in remote_chain_data]
+            success, msg = self.blockchain.sync_chain(remote_chain)
+            if success:
+                logger.info("链同步成功，新高度: %d", len(self.blockchain.chain) - 1)
+            else:
+                logger.warning("链同步失败: %s", msg)
+        except Exception as e:
+            logger.error("链同步异常: %s", e)
+
+    def _try_sync_from_peer(self, peer_id: str) -> bool:
+        """
+        从指定节点同步链（用于启动时快速追赶）
+        返回是否同步成功
+        """
+        remote_chain_data = self.network.request_chain_sync(peer_id)
+        if remote_chain_data is None:
+            return False
+
+        try:
+            from blockchain.block import Block
+            remote_chain = [Block.from_dict(b) for b in remote_chain_data]
+            success, msg = self.blockchain.sync_chain(remote_chain)
+            return success
+        except Exception as e:
+            logger.error("从节点 %s 同步异常: %s", peer_id, e)
+            return False
 
     def execute_ipmi_command(self, target_ip: str, command: str, 
                               operator: str = "web"):
