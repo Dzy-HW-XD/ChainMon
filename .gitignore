@@ -1,0 +1,29 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+venv/
+env/
+.venv
+*.egg-info/
+dist/
+build/
+*.log
+*.db
+*.db-journal
+config/node_config.yaml
+config/remote_servers.txt
+data/
+logs/
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+*.pem
+*.key
+
+# Sensitive files
+ssh remote.txt
+token.txt
+node_key.pem

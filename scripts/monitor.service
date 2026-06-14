@@ -1,0 +1,16 @@
+[Unit]
+Description=Blockchain Server Monitor Client
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/blockchain-srv-monitor
+ExecStart=/opt/blockchain-srv-monitor/venv/bin/python3 /opt/blockchain-srv-monitor/monitor_client.py
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
