@@ -95,20 +95,22 @@ class IPMIExecutor:
         
         try:
             # 构建完整命令
+            # 使用 -R 1 减少重试次数，-N 1 减少ping重试，加快失败响应
             full_cmd = [
                 "ipmitool",
                 "-I", "lanplus",
                 "-H", target_ip,
                 "-U", self.ipmi_username,
                 "-P", self.ipmi_password,
-                "-o", "5",  # 连接超时5秒，避免无BMC设备卡住
+                "-R", "1",   # 重试次数=1（默认4）
+                "-N", "1",   # ping重试=1
             ]
             
             # 解析ipmi_command，添加到命令末尾
             cmd_parts = ipmi_command.strip().split()
             full_cmd.extend(cmd_parts)
             
-            # 执行（subprocess超时10秒，ipmitool连接超时5秒）
+            # 执行（subprocess超时10秒，ipmitool快速失败）
             result = subprocess.run(full_cmd, capture_output=True, text=True, timeout=10)
             
             if result.returncode == 0:
