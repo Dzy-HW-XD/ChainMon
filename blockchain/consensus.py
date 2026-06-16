@@ -68,37 +68,45 @@ class SimpleConsensus:
                 return p
         return None
 
+    def _get_all_nodes(self) -> List[str]:
+        """
+        获取包含自身在内的所有节点ID列表（按字母排序保证所有节点视图一致）
+        """
+        peer_ids = [p["node_id"] for p in self.peers]
+        all_nodes = sorted(set([self.node_id] + peer_ids))
+        return all_nodes
+
     def is_my_turn(self) -> bool:
         """
         判断当前节点是否应该创建下一个区块
-        轮询机制：按顺序轮流
+        轮询机制：所有节点（含自己）按排序顺序轮流
         """
-        if not self.peers:
-            return True  # 只有一个节点，直接返回True
+        all_nodes = self._get_all_nodes()
         
-        # 找到当前节点在peers中的索引
-        my_index = None
-        for i, p in enumerate(self.peers):
-            if p["node_id"] == self.node_id:
-                my_index = i
-                break
+        if len(all_nodes) == 1:
+            return True  # 只有自己，直接返回True
         
-        if my_index is None:
-            logger.warning(f"当前节点 {self.node_id} 不在节点白名单中")
-            return False
+        # 找到当前节点在排序列表中的索引
+        try:
+            my_index = all_nodes.index(self.node_id)
+        except ValueError:
+            logger.warning(f"当前节点 {self.node_id} 不在节点列表中")
+            return True  # 保险起见允许出块
         
-        return my_index == self.current_leader_index
+        leader_index = self.current_leader_index % len(all_nodes)
+        return my_index == leader_index
 
     def next_leader(self) -> str:
         """
         切换到下一个记账节点
         返回下一个记账节点的ID
         """
-        if not self.peers:
+        all_nodes = self._get_all_nodes()
+        if len(all_nodes) == 0:
             return self.node_id
         
-        self.current_leader_index = (self.current_leader_index + 1) % len(self.peers)
-        next_node = self.peers[self.current_leader_index]["node_id"]
+        self.current_leader_index = (self.current_leader_index + 1) % len(all_nodes)
+        next_node = all_nodes[self.current_leader_index]
         logger.debug(f"记账权转移至: {next_node} (index={self.current_leader_index})")
         return next_node
 
@@ -196,23 +204,24 @@ class SimpleConsensus:
             return  # 已经处理过了
         
         # 统计同意票数
-        total_peers = len(self.peers)
+        all_nodes = self._get_all_nodes()
+        total_nodes = len(all_nodes)  # 含自身的总节点数
         approve_votes = sum(1 for v in pending["votes"] if v.is_approved)
         
-        if total_peers == 0:
+        if total_nodes == 0:
             approval_rate = 100
         else:
-            approval_rate = (approve_votes / total_peers) * 100
+            approval_rate = (approve_votes / total_nodes) * 100
         
         logger.debug(f"区块 {block_hash[:16]}...  consensus检查: "
-                   f"同意={approve_votes}/{total_peers}, 通过率={approval_rate:.1f}%")
+                   f"同意={approve_votes}/{total_nodes}, 通过率={approval_rate:.1f}%")
         
         # 检查是否达到阈值
         if approval_rate >= self.consensus_threshold:
             pending["status"] = BlockStatus.CONFIRMED
             self.confirmed_block_hashes.add(block_hash)
             logger.info(f"区块 {block_hash[:16]}... 已达到共识阈值，正式确认！")
-        elif (total_peers - approve_votes) / total_peers * 100 >= self.consensus_threshold:
+        elif total_nodes > 0 and (total_nodes - approve_votes) / total_nodes * 100 >= self.consensus_threshold:
             # 超过阈值的人反对，拒绝区块
             pending["status"] = BlockStatus.REJECTED
             logger.warning(f"区块 {block_hash[:16]}... 已被拒绝")
