@@ -253,7 +253,7 @@ class Blockchain:
     def sync_chain(self, remote_chain: List[Block]) -> Tuple[bool, str]:
         """
         同步远程区块链
-        如果远程链更长且有效，则替换本地链
+        如果远程链更长且有效，则替换本地链（最长链原则）
         """
         if len(remote_chain) <= len(self.chain):
             return False, "远程链不比本地链长"
@@ -265,12 +265,22 @@ class Blockchain:
         if not temp_blockchain.is_chain_valid():
             return False, "远程链完整性验证失败"
         
-        # 检查远程链是否与本地链有共同前缀
-        common_height = min(len(self.chain), len(remote_chain)) - 1
-        if self.chain[common_height].current_hash != remote_chain[common_height].current_hash:
-            return False, "远程链与本地链分叉，无法同步"
+        # 检查是否有共同前缀（如果有则只同步新增部分）
+        # 找到最长的共同前缀高度
+        common_height = 0
+        for i in range(min(len(self.chain), len(remote_chain))):
+            if self.chain[i].current_hash == remote_chain[i].current_hash:
+                common_height = i
+            else:
+                break
         
-        # 替换本地链
+        # 如果本地链在共同前缀之后有额外区块（真正分叉），警告但仍接受更长链
+        local_extra = len(self.chain) - 1 - common_height
+        remote_extra = len(remote_chain) - 1 - common_height
+        if local_extra > 0:
+            logger.warning(f"检测到链分叉：本地多出 {local_extra} 块，远端多出 {remote_extra} 块，采用最长链")
+        
+        # 最长链原则：直接替换本地链
         self.chain = remote_chain
         self._save_chain()
         
