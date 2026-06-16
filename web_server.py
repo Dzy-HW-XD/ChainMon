@@ -3,24 +3,35 @@
 """
 Web管理后台服务器
 提供可视化监控界面和API接口
+- 设备管理：查看所有设备信息，点击查看FRU详情
+- 区块链浏览：完整链可视化，显示节点出块信息
+- FRU加密传输：AES-256-CBC加密保护硬件信息
 """
 from flask import Flask, request, jsonify, render_template_string
 import logging
 import threading
+import json
 import time
 from datetime import datetime
 from typing import Dict, Any, List
+
+from client.crypto import FRUCrypto
 
 logger = logging.getLogger(__name__)
 
 # 全局引用
 _global_client = None
+_crypto = None  # 加密器
 
 
 def set_client(client):
     """设置全局客户端引用"""
-    global _global_client
+    global _global_client, _crypto
     _global_client = client
+    # 从web配置中获取密码用于FRU加密
+    web_password = client.config.get("web", {}).get("password", "admin123")
+    _crypto = FRUCrypto(web_password)
+    logger.info("Web加密器初始化完成，算法: AES-256-CBC")
 
 
 # ======================== HTML模板 ========================
@@ -63,6 +74,7 @@ DASHBOARD_HTML = """
         .tag-blue { background: #e3f2fd; color: #2196f3; }
         .tag-orange { background: #fff3e0; color: #f39c12; }
         .tag-purple { background: #f3e5f5; color: #9c27b0; }
+        .tag-cyan { background: #e0f7fa; color: #0097a7; }
         .btn { padding: 6px 16px; border: none; border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 500; transition: all 0.2s; }
         .btn-primary { background: #1a1a2e; color: #fff; }
         .btn-primary:hover { background: #16213e; }
@@ -83,20 +95,56 @@ DASHBOARD_HTML = """
         .page.active { display: block; }
         .empty { text-align: center; padding: 40px; color: #999; }
         .chain-vis { display: flex; gap: 8px; overflow-x: auto; padding: 10px 0; }
-        .chain-block { min-width: 100px; background: #f8f9fa; border: 2px solid #1a1a2e; border-radius: 8px; padding: 10px; text-align: center; font-size: 12px; flex-shrink: 0; }
+        .chain-block { min-width: 120px; background: #f8f9fa; border: 2px solid #1a1a2e; border-radius: 8px; padding: 10px; text-align: center; font-size: 12px; flex-shrink: 0; }
         .chain-block .height { font-weight: 700; font-size: 16px; color: #1a1a2e; }
+        .chain-block .node-tag { margin-top: 4px; }
         .chain-block .info { color: #999; margin-top: 4px; }
         .chain-arrow { display: flex; align-items: center; color: #1a1a2e; font-size: 18px; flex-shrink: 0; }
         .refresh-btn { float: right; }
+
+        /* 设备详情模态框 */
+        .modal-overlay { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 1000; }
+        .modal-overlay.active { display: flex; align-items: center; justify-content: center; }
+        .modal { background: #fff; border-radius: 12px; width: 680px; max-width: 95vw; max-height: 85vh; overflow-y: auto; box-shadow: 0 20px 60px rgba(0,0,0,0.3); }
+        .modal-header { padding: 20px 24px; border-bottom: 1px solid #eee; display: flex; align-items: center; }
+        .modal-header h3 { font-size: 18px; color: #1a1a2e; flex: 1; }
+        .modal-close { background: none; border: none; font-size: 24px; cursor: pointer; color: #999; padding: 0 4px; }
+        .modal-close:hover { color: #333; }
+        .modal-body { padding: 24px; }
+        .fru-section { margin-bottom: 20px; }
+        .fru-section-title { font-size: 14px; font-weight: 600; color: #1a1a2e; border-bottom: 2px solid #1a1a2e; padding-bottom: 6px; margin-bottom: 12px; }
+        .fru-grid { display: grid; grid-template-columns: 140px 1fr; gap: 8px 16px; }
+        .fru-label { font-size: 13px; color: #888; font-weight: 500; text-align: right; }
+        .fru-value { font-size: 13px; color: #333; word-break: break-all; }
+        .fru-value.empty { color: #ccc; font-style: italic; }
+        .encrypted-badge { display: inline-flex; align-items: center; gap: 4px; background: #e8f5e9; color: #27ae60; padding: 3px 10px; border-radius: 12px; font-size: 12px; font-weight: 500; }
+        .encrypted-badge svg { width: 14px; height: 14px; }
+        .decrypt-fail { color: #e74c3c; font-size: 13px; padding: 12px; background: #fef2f2; border-radius: 6px; }
+        .loading-spinner { display: inline-block; width: 20px; height: 20px; border: 2px solid #ddd; border-top: 2px solid #1a1a2e; border-radius: 50%; animation: spin 0.8s linear infinite; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        /* 设备行点击 */
+        .device-row { cursor: pointer; transition: background 0.15s; }
+        .device-row:hover td { background: #e3f2fd !important; }
+        .device-actions { display: flex; gap: 6px; }
+
+        /* 节点颜色 */
+        .node-ali { background: #e3f2fd; color: #1565c0; }
+        .node-tc { background: #e8f5e9; color: #2e7d32; }
+        .node-default { background: #f3e5f5; color: #7b1fa2; }
     </style>
 </head>
 <body>
     <nav class="nav">
         <h1>Blockchain Monitor</h1>
-        <span class="badge">v1.0</span>
+        <span class="badge">v1.1</span>
         <div class="nav-right">
-            Node: <strong id="node-id">-</strong> | 
-            <span id="node-status" class="tag tag-green">ONLINE</span>
+            Node: <strong id="node-id">-</strong> |
+            <span id="node-status" class="tag tag-green">ONLINE</span> |
+            <span class="encrypted-badge">
+                <svg viewBox="0 0 24 24" fill="currentColor"><path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zM12 17c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1s3.1 1.39 3.1 3.1v2z"/></svg>
+                AES-256
+            </span>
         </div>
     </nav>
 
@@ -128,9 +176,10 @@ DASHBOARD_HTML = """
         <!-- Devices -->
         <div id="page-devices" class="page">
             <div class="panel">
-                <h2>Managed Devices</h2>
+                <h2>Managed Devices <button class="btn btn-outline btn-sm refresh-btn" onclick="loadDevices()">Refresh</button></h2>
+                <p style="font-size:13px;color:#888;margin-bottom:12px;">Click any device row to view FRU hardware details (encrypted)</p>
                 <table>
-                    <thead><tr><th>IP</th><th>Name</th><th>Status</th><th>Actions</th></tr></thead>
+                    <thead><tr><th>IP</th><th>Name</th><th>Source</th><th>Status</th><th>Actions</th></tr></thead>
                     <tbody id="device-list"></tbody>
                 </table>
             </div>
@@ -206,12 +255,81 @@ DASHBOARD_HTML = """
         </div>
     </div>
 
+    <!-- 设备FRU详情模态框 -->
+    <div class="modal-overlay" id="fru-modal-overlay" onclick="closeFruModal(event)">
+        <div class="modal" onclick="event.stopPropagation()">
+            <div class="modal-header">
+                <h3 id="fru-modal-title">Device FRU Info</h3>
+                <span class="encrypted-badge" id="fru-encrypt-badge" style="margin-left:12px;">
+                    <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zM12 17c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1s3.1 1.39 3.1 3.1v2z"/></svg>
+                    AES-256-CBC Encrypted
+                </span>
+                <button class="modal-close" onclick="closeFruModal()">&times;</button>
+            </div>
+            <div class="modal-body" id="fru-modal-body">
+                <div style="text-align:center;padding:40px;"><div class="loading-spinner"></div><br><br>Loading...</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 无外部CDN依赖：使用浏览器原生Web Crypto API进行AES解密 -->
+
     <script>
+    // ===== 全局配置 =====
+    var ENCRYPTION_KEY_RAW = ""; // 原始密钥bytes（从Base64解码）
+
+    // ===== 初始化：获取加密密钥 =====
+    function initCryptoKey() {
+        fetch('/api/crypto/key').then(function(r) { return r.json(); }).then(function(data) {
+            var keyB64 = data.key || "";
+            // Base64解码为Uint8Array
+            var binStr = atob(keyB64);
+            ENCRYPTION_KEY_RAW = new Uint8Array(binStr.length);
+            for (var i = 0; i < binStr.length; i++) {
+                ENCRYPTION_KEY_RAW[i] = binStr.charCodeAt(i);
+            }
+        }).catch(function(e) { console.error("Failed to get encryption key:", e); });
+    }
+
+    // ===== AES-256-CBC 解密（使用浏览器原生Web Crypto API）=====
+    async function decryptAesCbc(ivBase64, dataBase64) {
+        if (!ENCRYPTION_KEY_RAW) throw new Error("Encryption key not loaded");
+
+        // Base64 → ArrayBuffer
+        function b64ToBuf(b64) {
+            var bin = atob(b64);
+            var arr = new Uint8Array(bin.length);
+            for (var i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+            return arr.buffer;
+        }
+
+        var ivBuf = b64ToBuf(ivBase64);
+        var dataBuf = b64ToBuf(dataBase64);
+
+        // 导入密钥
+        var key = await crypto.subtle.importKey(
+            "raw", ENCRYPTION_KEY_RAW.buffer,
+            { name: "AES-CBC" }, false, ["decrypt"]
+        );
+
+        // 解密
+        var decrypted = await crypto.subtle.decrypt(
+            { name: "AES-CBC", iv: ivBuf }, key, dataBuf
+        );
+
+        // ArrayBuffer → String
+        var decoder = new TextDecoder("utf-8");
+        return decoder.decode(decrypted);
+    }
+
     function switchTab(name) {
-        document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-        document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+        document.querySelectorAll('.tab').forEach(function(t) { t.classList.remove('active'); });
+        document.querySelectorAll('.page').forEach(function(p) { p.classList.remove('active'); });
         document.getElementById('page-' + name).classList.add('active');
-        event.target.classList.add('active');
+        // 找到对应的tab按钮并激活
+        document.querySelectorAll('.tab').forEach(function(t) {
+            if (t.textContent.trim().toLowerCase().indexOf(name) >= 0) t.classList.add('active');
+        });
         loadData();
     }
 
@@ -236,10 +354,20 @@ DASHBOARD_HTML = """
         return '<span class="tag ' + info[1] + '">' + info[0] + '</span>';
     }
 
+    function nodeTag(nodeId) {
+        if (!nodeId) return '<span class="tag tag-default">-</span>';
+        var cls = 'node-default';
+        if (nodeId === 'ali') cls = 'node-ali';
+        else if (nodeId === 'tc') cls = 'node-tc';
+        else if (nodeId.indexOf('ali') >= 0) cls = 'node-ali';
+        else if (nodeId.indexOf('tc') >= 0) cls = 'node-tc';
+        return '<span class="tag ' + cls + '">' + nodeId + '</span>';
+    }
+
+    // ===== 数据加载 =====
     function loadData() {
-        fetch('/api/status').then(r => r.json()).then(data => {
+        fetch('/api/status').then(function(r) { return r.json(); }).then(function(data) {
             document.getElementById('node-id').textContent = data.node_id || '-';
-            // Stat cards
             var bc = data.blockchain || {};
             var net = data.network || {};
             document.getElementById('stat-cards').innerHTML =
@@ -247,30 +375,34 @@ DASHBOARD_HTML = """
                 '<div class="card ok"><h3>Network Peers</h3><div class="value">' + (net.online_peers || 0) + '</div><div class="sub">Online / ' + (net.total_peers || 0) + ' total</div></div>' +
                 '<div class="card"><h3>Managed Devices</h3><div class="value">' + (data.managed_devices || 0) + '</div><div class="sub">IPMI ready</div></div>' +
                 '<div class="card warn"><h3>Pending Data</h3><div class="value">' + (bc.pending_data_count || 0) + '</div><div class="sub">Awaiting on-chain</div></div>';
-        }).catch(e => console.error(e));
+        }).catch(function(e) { console.error(e); });
 
-        // Load blocks
-        fetch('/api/blockchain/blocks?limit=20').then(r => r.json()).then(data => {
+        // 加载区块
+        fetch('/api/blockchain/blocks?limit=50').then(function(r) { return r.json(); }).then(function(data) {
             var blocks = data.blocks || [];
-            // Chain visualization (last 10)
+            // 链可视化（最近10个）
             var vis = '';
             var last10 = blocks.slice(-10);
             for (var i = 0; i < last10.length; i++) {
                 var b = last10[i];
-                vis += '<div class="chain-block"><div class="height">#' + b.height + '</div><div class="info">' + b.data_count + ' items</div></div>';
+                vis += '<div class="chain-block">' +
+                    '<div class="height">#' + b.height + '</div>' +
+                    '<div class="node-tag">' + nodeTag(b.node_id) + '</div>' +
+                    '<div class="info">' + b.data_count + ' items</div>' +
+                '</div>';
                 if (i < last10.length - 1) vis += '<div class="chain-arrow">\u2192</div>';
             }
             document.getElementById('chain-vis').innerHTML = vis || '<div class="empty">No blocks</div>';
 
-            // Recent blocks table
+            // 最近区块表格
             var html = '';
             for (var i = blocks.length - 1; i >= 0; i--) {
                 var b = blocks[i];
-                html += '<tr><td><strong>#' + b.height + '</strong></td><td class="hash">' + shortHash(b.hash) + '</td><td>' + (b.node_id || '-') + '</td><td>' + b.data_count + '</td><td>' + formatTime(b.timestamp) + '</td></tr>';
+                html += '<tr><td><strong>#' + b.height + '</strong></td><td class="hash">' + shortHash(b.hash) + '</td><td>' + nodeTag(b.node_id) + '</td><td>' + b.data_count + '</td><td>' + formatTime(b.timestamp) + '</td></tr>';
             }
             document.getElementById('recent-blocks').innerHTML = html || '<tr><td colspan="5" class="empty">No blocks</td></tr>';
 
-            // All blocks page
+            // 区块链页面
             var bcCards = document.getElementById('bc-cards');
             if (bcCards) {
                 bcCards.innerHTML =
@@ -280,43 +412,199 @@ DASHBOARD_HTML = """
             var allHtml = '';
             for (var i = blocks.length - 1; i >= 0; i--) {
                 var b = blocks[i];
-                allHtml += '<tr><td>#' + b.height + '</td><td class="hash">' + shortHash(b.hash) + '</td><td class="hash">' + shortHash(b.prev_hash || '') + '</td><td>' + (b.node_id || '-') + '</td><td>' + b.data_count + '</td><td>' + formatTime(b.timestamp) + '</td></tr>';
+                allHtml += '<tr><td>#' + b.height + '</td><td class="hash">' + shortHash(b.hash) + '</td><td class="hash">' + shortHash(b.prev_hash || '') + '</td><td>' + nodeTag(b.node_id) + '</td><td>' + b.data_count + '</td><td>' + formatTime(b.timestamp) + '</td></tr>';
             }
             var allBody = document.getElementById('all-blocks');
             if (allBody) allBody.innerHTML = allHtml || '<tr><td colspan="6" class="empty">No blocks</td></tr>';
-        }).catch(e => console.error(e));
+        }).catch(function(e) { console.error(e); });
 
-        // Load devices
-        fetch('/api/devices').then(r => r.json()).then(data => {
-            var devs = data.devices || [];
-            var html = '';
-            for (var d of devs) {
-                html += '<tr><td><strong>' + d.ip + '</strong></td><td>' + (d.name || '-') + '</td><td><span class="tag tag-blue">Managed</span></td><td><button class="btn btn-outline btn-sm" onclick="document.getElementById(\\'ipmi-ip\\').value=\\'' + d.ip + '\\';switchTab(\\'ipmi\\')">IPMI</button></td></tr>';
-            }
-            document.getElementById('device-list').innerHTML = html || '<tr><td colspan="4" class="empty">No devices</td></tr>';
-        }).catch(e => console.error(e));
-
+        // 加载设备
+        loadDevices();
         loadAudit();
     }
 
+    function loadDevices() {
+        fetch('/api/devices').then(function(r) { return r.json(); }).then(function(data) {
+            var devs = data.devices || [];
+            var html = '';
+            for (var i = 0; i < devs.length; i++) {
+                var d = devs[i];
+                var sourceTag = d.source === 'chain' ? '<span class="tag tag-blue">Chain</span>' : '<span class="tag tag-green">Config</span>';
+                var statusTag = d.status === 'online' ? '<span class="tag tag-green">Online</span>' : (d.status === 'managed' ? '<span class="tag tag-blue">Managed</span>' : '<span class="tag tag-orange">Unknown</span>');
+                html += '<tr class="device-row" data-ip="' + d.ip + '" data-name="' + (d.name || '') + '">';
+                    '<td><strong>' + d.ip + '</strong></td>' +
+                    '<td>' + (d.name || '-') + '</td>' +
+                    '<td>' + sourceTag + '</td>' +
+                    '<td>' + statusTag + '</td>' +
+                                        '<td class="device-actions">' +
+                                            '<button class="btn btn-outline btn-sm" data-action="fru" data-ip="' + d.ip + '" data-name="' + (d.name || '') + '">FRU</button>' +
+                                            '<button class="btn btn-outline btn-sm" data-action="ipmi" data-ip="' + d.ip + '">IPMI</button>' +
+                                        '</td></tr>';
+            }
+            document.getElementById('device-list').innerHTML = html || '<tr><td colspan="5" class="empty">No devices</td></tr>';
+        }).catch(function(e) { console.error(e); });
+    }
+
+    // ===== FRU设备详情 =====
+    function showFruDetail(ip, name) {
+        var modal = document.getElementById('fru-modal-overlay');
+        modal.classList.add('active');
+        document.getElementById('fru-modal-title').textContent = (name ? name + ' - ' : '') + ip;
+        document.getElementById('fru-modal-body').innerHTML = '<div style="text-align:center;padding:40px;"><div class="loading-spinner"></div><br><br>Loading FRU data...</div>';
+
+        fetch('/api/device/' + encodeURIComponent(ip) + '/fru').then(function(r) { return r.json(); }).then(function(data) {
+            return renderFruDetail(ip, data);
+        }).catch(function(e) {
+            document.getElementById('fru-modal-body').innerHTML = '<div class="decrypt-fail">Failed to load FRU data: ' + e + '</div>';
+        });
+    }
+
+    async function renderFruDetail(ip, rawData) {
+        var fruData = null;
+        var alg = rawData.alg || 'unknown';
+        var isEncrypted = rawData.encrypted === true;
+
+        if (isEncrypted) {
+            try {
+                var plaintext = await decryptAesCbc(rawData.iv, rawData.data);
+                if (!plaintext) throw new Error("Decryption produced empty result");
+                fruData = JSON.parse(plaintext);
+            } catch(e) {
+                console.error("Decryption failed:", e);
+                document.getElementById('fru-modal-body').innerHTML =
+                    '<div class="decrypt-fail"><strong>Decryption Failed</strong><br>Error: ' + e.message + '<br>The encryption key may not match, or the data was corrupted in transit.</div>';
+                return;
+            }
+        } else {
+            fruData = rawData;
+        }
+
+        var html = '';
+
+        // 加密信息
+        html += '<div style="margin-bottom:16px;"><span class="encrypted-badge">' +
+            '<svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zM12 17c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1s3.1 1.39 3.1 3.1v2z"/></svg>' +
+            'Encrypted with ' + alg + '</span> ' +
+            '<span style="font-size:12px;color:#888;margin-left:8px;">Data decrypted locally in browser</span></div>';
+
+        // Product信息
+        var product = fruData.product || fruData;
+        if (product.product_manufacturer || product.product_name || product.product_serial) {
+            html += '<div class="fru-section">';
+            html += '<div class="fru-section-title">Product Information</div>';
+            html += '<div class="fru-grid">';
+            html += fruRow('Manufacturer', product.product_manufacturer);
+            html += fruRow('Product Name', product.product_name);
+            html += fruRow('Part Number', product.product_part_number);
+            html += fruRow('Serial Number', product.product_serial);
+            html += '</div></div>';
+        }
+
+        // Board信息
+        if (fruData.board && (fruData.board.mfr || fruData.board.product || fruData.board.serial)) {
+            html += '<div class="fru-section">';
+            html += '<div class="fru-section-title">Board Information</div>';
+            html += '<div class="fru-grid">';
+            html += fruRow('Board Mfg', fruData.board.mfr);
+            html += fruRow('Board Product', fruData.board.product);
+            html += fruRow('Board Serial', fruData.board.serial);
+            html += fruRow('Board Part', fruData.board.part);
+            html += '</div></div>';
+        } else if (product.board_mfr || product.board_product || product.board_serial) {
+            html += '<div class="fru-section">';
+            html += '<div class="fru-section-title">Board Information</div>';
+            html += '<div class="fru-grid">';
+            html += fruRow('Board Mfg', product.board_mfr);
+            html += fruRow('Board Product', product.board_product);
+            html += fruRow('Board Serial', product.board_serial);
+            html += fruRow('Board Part', product.board_part);
+            html += '</div></div>';
+        }
+
+        // Chassis信息
+        if (product.chassis_part || product.chassis_serial || (fruData.chassis && (fruData.chassis.part || fruData.chassis.serial))) {
+            html += '<div class="fru-section">';
+            html += '<div class="fru-section-title">Chassis Information</div>';
+            html += '<div class="fru-grid">';
+            if (fruData.chassis) {
+                html += fruRow('Chassis Part', fruData.chassis.part);
+                html += fruRow('Chassis Serial', fruData.chassis.serial);
+            } else {
+                html += fruRow('Chassis Part', product.chassis_part);
+                html += fruRow('Chassis Serial', product.chassis_serial);
+            }
+            html += '</div></div>';
+        }
+
+        // 系统资源（CPU/内存/温度等）
+        if (fruData.system) {
+            html += '<div class="fru-section">';
+            html += '<div class="fru-section-title">System Resources</div>';
+            html += '<div class="fru-grid">';
+            html += fruRow('CPU Model', fruData.system.cpu_model);
+            html += fruRow('CPU Cores', fruData.system.cpu_cores);
+            html += fruRow('Memory Total', fruData.system.memory_total);
+            html += fruRow('Memory Type', fruData.system.memory_type);
+            html += fruRow('BIOS Version', fruData.system.bios_version);
+            html += '</div></div>';
+        }
+
+        // 传感器摘要
+        if (fruData.sensors_summary) {
+            var ss = fruData.sensors_summary;
+            html += '<div class="fru-section">';
+            html += '<div class="fru-section-title">Sensor Summary</div>';
+            html += '<div class="fru-grid">';
+            if (ss.temperature) html += fruRow('Temperature', ss.temperature);
+            if (ss.fan_speed) html += fruRow('Fan Speed', ss.fan_speed);
+            if (ss.power) html += fruRow('Power', ss.power);
+            html += '</div></div>';
+        }
+
+        // 采集时间
+        if (fruData.collect_time) {
+            html += '<div style="margin-top:16px;font-size:12px;color:#aaa;text-align:right;">Collected: ' + formatTime(fruData.collect_time) + '</div>';
+        }
+
+        document.getElementById('fru-modal-body').innerHTML = html || '<div class="empty">No FRU data available for this device</div>';
+    }
+
+    function fruRow(label, value) {
+        if (!value) value = '';
+        var cls = value ? '' : ' empty';
+        var display = value || 'N/A';
+        return '<div class="fru-label">' + label + '</div><div class="fru-value' + cls + '">' + display + '</div>';
+    }
+
+    function closeFruModal(event) {
+        if (event && event.target !== document.getElementById('fru-modal-overlay')) return;
+        document.getElementById('fru-modal-overlay').classList.remove('active');
+    }
+
+    // ===== Audit =====
     function loadAudit() {
-        var type = document.getElementById('audit-type').value;
-        var ip = document.getElementById('audit-ip').value;
+        var typeEl = document.getElementById('audit-type');
+        var ipEl = document.getElementById('audit-ip');
+        if (!typeEl || !ipEl) return;
+        var type = typeEl.value;
+        var ip = ipEl.value;
         var url = '/api/query?limit=50';
         if (type) url += '&data_type=' + type;
         if (ip) url += '&device_ip=' + ip;
-        fetch(url).then(r => r.json()).then(data => {
+        fetch(url).then(function(r) { return r.json(); }).then(function(data) {
             var results = data.results || [];
             var html = '';
-            for (var r of results) {
+            for (var i = 0; i < results.length; i++) {
+                var r = results[i];
                 var content = r.content || '';
                 if (content.length > 120) content = content.substring(0, 120) + '...';
                 html += '<tr><td>' + formatTime(r.timestamp) + '</td><td>' + typeLabel(r.data_type) + '</td><td>' + (r.device_ip || '-') + '</td><td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + content + '</td><td>' + (r.operate_user || '-') + '</td><td class="hash">' + shortHash(r.block_hash) + '</td></tr>';
             }
             document.getElementById('audit-list').innerHTML = html || '<tr><td colspan="6" class="empty">No records</td></tr>';
-        }).catch(e => console.error(e));
+        }).catch(function(e) { console.error(e); });
     }
 
+    // ===== IPMI =====
     function execIPMI() {
         var ip = document.getElementById('ipmi-ip').value;
         var cmd = document.getElementById('ipmi-cmd').value;
@@ -328,14 +616,37 @@ DASHBOARD_HTML = """
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({ip: ip, command: cmd})
-        }).then(r => r.json()).then(data => {
+        }).then(function(r) { return r.json(); }).then(function(data) {
             box.textContent = JSON.stringify(data, null, 2);
-        }).catch(e => { box.textContent = 'Error: ' + e; });
+        }).catch(function(e) { box.textContent = 'Error: ' + e; });
     }
 
-    // Initial load
+    // ===== 事件委托 =====
+    document.addEventListener('click', function(e) {
+        var btn = e.target.closest('[data-action]');
+        if (btn) {
+            var action = btn.getAttribute('data-action');
+            var ip = btn.getAttribute('data-ip');
+            if (action === 'fru') {
+                var name = btn.getAttribute('data-name') || '';
+                showFruDetail(ip, name);
+            } else if (action === 'ipmi') {
+                document.getElementById('ipmi-ip').value = ip;
+                switchTab('ipmi');
+            }
+            return;
+        }
+        var row = e.target.closest('tr.device-row');
+        if (row) {
+            var ip = row.getAttribute('data-ip');
+            var name = row.getAttribute('data-name') || '';
+            showFruDetail(ip, name);
+        }
+    });
+
+    // ===== 初始化 =====
+    initCryptoKey();  // 异步获取加密密钥
     loadData();
-    // Auto refresh every 30s
     setInterval(loadData, 30000);
     </script>
 </body>
@@ -359,6 +670,18 @@ def create_app() -> Flask:
             return jsonify({"error": "client not initialized"}), 500
         return jsonify(_global_client.get_status())
 
+    @app.route('/api/crypto/key')
+    def api_crypto_key():
+        """获取加密密钥（Base64编码，供前端CryptoJS使用）
+        注意：此密钥仅对已认证的管理员可见，用于FRU数据的客户端解密
+        """
+        if not _global_client:
+            return jsonify({"error": "client not initialized"}), 500
+        from client.crypto import FRUCrypto
+        web_password = _global_client.config.get("web", {}).get("password", "admin123")
+        key_b64 = FRUCrypto.derive_key_base64(web_password)
+        return jsonify({"key": key_b64})
+
     @app.route('/api/blockchain/info')
     def api_chain_info():
         """获取区块链信息"""
@@ -371,7 +694,7 @@ def create_app() -> Flask:
         """获取区块列表"""
         if not _global_client:
             return jsonify({"error": "client not initialized"}), 500
-        
+
         limit = request.args.get('limit', 20, type=int)
         blocks = []
         chain = _global_client.blockchain.chain
@@ -393,7 +716,7 @@ def create_app() -> Flask:
         """获取区块详情"""
         if not _global_client:
             return jsonify({"error": "client not initialized"}), 500
-        
+
         block = _global_client.blockchain.get_block_by_height(height)
         if not block:
             return jsonify({"error": "block not found"}), 404
@@ -401,32 +724,164 @@ def create_app() -> Flask:
 
     @app.route('/api/devices')
     def api_devices():
-        """获取设备列表"""
+        """
+        获取所有设备列表
+        合并配置中的设备 + 链上数据中发现的设备
+        """
         if not _global_client:
             return jsonify({"error": "client not initialized"}), 500
-        
+
         devices = []
+        seen_ips = set()
+
+        # 1. 从配置中获取设备
+        config_devices = _global_client.config.get("devices", [])
+        for d in config_devices:
+            ip = d.get("ip", "")
+            if ip and ip not in seen_ips:
+                seen_ips.add(ip)
+                devices.append({
+                    "ip": ip,
+                    "name": d.get("name", ""),
+                    "type": d.get("type", "server"),
+                    "status": "managed",
+                    "source": "config"
+                })
+
+        # 2. 从本地managed_devices获取
         for d in _global_client.managed_devices:
-            devices.append({
-                "ip": d.get("ip"),
-                "name": d.get("name", ""),
-                "status": "managed"
-            })
+            ip = d.get("ip", "")
+            if ip and ip not in seen_ips:
+                seen_ips.add(ip)
+                devices.append({
+                    "ip": ip,
+                    "name": d.get("name", ""),
+                    "type": d.get("type", "server"),
+                    "status": "managed",
+                    "source": "config"
+                })
+
+        # 3. 从区块链数据中扫描设备IP
+        chain = _global_client.blockchain.chain
+        for block in chain:
+            for data in block.data_list:
+                ip = data.device_ip
+                if ip and ip not in seen_ips and ip != "localhost":
+                    seen_ips.add(ip)
+                    devices.append({
+                        "ip": ip,
+                        "name": "",
+                        "type": "discovered",
+                        "status": "discovered",
+                        "source": "chain"
+                    })
+
         return jsonify({"devices": devices})
+
+    @app.route('/api/device/<ip>/fru')
+    def api_device_fru(ip):
+        """
+        获取设备FRU信息（AES-256-CBC加密传输）
+        优先从链上获取最新FRU数据，如无则实时采集
+        """
+        if not _global_client:
+            return jsonify({"error": "client not initialized"}), 500
+
+        if not _crypto:
+            return jsonify({"error": "crypto not initialized"}), 500
+
+        fru_data = None
+        source = "none"
+
+        # 1. 从区块链中查找最新的FRU数据
+        chain = _global_client.blockchain.chain
+        from blockchain.block import ChainDataType
+        for block in reversed(chain):
+            for data in reversed(block.data_list):
+                if data.device_ip == ip and data.data_type == int(ChainDataType.FRU_HARDWARE):
+                    try:
+                        fru_data = json.loads(data.content)
+                        source = "chain"
+                    except (json.JSONDecodeError, TypeError):
+                        fru_data = {"raw": data.content}
+                        source = "chain"
+                    break
+            if fru_data:
+                break
+
+        # 2. 如果链上没有，尝试实时采集
+        if not fru_data:
+            try:
+                result = _global_client.collector.collect_fru_info(ip)
+                if result.get("success"):
+                    fru_data = result
+                    source = "live"
+                else:
+                    fru_data = {"error": result.get("error", "FRU collection failed"), "ip": ip}
+                    source = "failed"
+            except Exception as e:
+                fru_data = {"error": str(e), "ip": ip}
+                source = "error"
+
+        # 3. 补充系统资源信息（从SDR传感器数据）
+        if fru_data and source != "failed" and source != "error":
+            # 从链上查找最新传感器数据
+            for block in reversed(chain):
+                for data in reversed(block.data_list):
+                    if data.device_ip == ip and data.data_type == int(ChainDataType.PERFORMANCE):
+                        try:
+                            sdr = json.loads(data.content)
+                            if sdr.get("success") or sdr.get("sensors"):
+                                fru_data["sensors_summary"] = _extract_sensor_summary(sdr)
+                        except (json.JSONDecodeError, TypeError):
+                            pass
+                        break
+                if fru_data.get("sensors_summary"):
+                    break
+
+        # 4. 添加元信息
+        fru_data["_source"] = source
+        fru_data["_ip"] = ip
+        fru_data["_collected_at"] = int(time.time())
+
+        # 5. 加密传输
+        encrypted = _crypto.encrypt(fru_data)
+        return jsonify(encrypted)
+
+    def _extract_sensor_summary(sdr_data: dict) -> dict:
+        """从SDR传感器数据中提取摘要信息"""
+        summary = {}
+        if sdr_data.get("temperature"):
+            temps = sdr_data["temperature"]
+            if isinstance(temps, dict):
+                temp_values = [v for v in temps.values() if isinstance(v, (int, float))]
+                if temp_values:
+                    summary["temperature"] = str(max(temp_values)) + " C (max)"
+        if sdr_data.get("fan_speed"):
+            fans = sdr_data["fan_speed"]
+            if isinstance(fans, dict):
+                fan_values = [v for v in fans.values() if isinstance(v, (int, float))]
+                if fan_values:
+                    summary["fan_speed"] = str(int(max(fan_values))) + " RPM (max)"
+        if sdr_data.get("power"):
+            power = sdr_data["power"]
+            if isinstance(power, (int, float)) and power > 0:
+                summary["power"] = str(int(power)) + " W"
+        return summary
 
     @app.route('/api/ipmi/execute', methods=['POST'])
     def api_execute_ipmi():
         """执行IPMI指令"""
         if not _global_client:
             return jsonify({"error": "client not initialized"}), 500
-        
+
         data = request.json
         target_ip = data.get("ip")
         command = data.get("command")
-        
+
         if not target_ip or not command:
             return jsonify({"error": "missing parameters"}), 400
-        
+
         result = _global_client.execute_ipmi_command(target_ip, command, "web")
         return jsonify(result)
 
@@ -435,11 +890,11 @@ def create_app() -> Flask:
         """查询链上数据"""
         if not _global_client:
             return jsonify({"error": "client not initialized"}), 500
-        
+
         data_type = request.args.get('data_type', type=int)
         device_ip = request.args.get('device_ip')
         limit = request.args.get('limit', 50, type=int)
-        
+
         results = _global_client.blockchain.query_data(
             data_type=data_type,
             device_ip=device_ip,
@@ -459,7 +914,7 @@ def create_app() -> Flask:
         """获取IPMI执行历史"""
         if not _global_client:
             return jsonify({"error": "client not initialized"}), 500
-        
+
         target_ip = request.args.get('ip')
         history = _global_client.ipmi_executor.get_command_history(target_ip)
         return jsonify({"history": history})
@@ -470,14 +925,12 @@ def create_app() -> Flask:
         if not _global_client:
             return jsonify({"error": "client not initialized"}), 500
 
-        # 从区块链中提取所有包含操作数据的记录
         entries = []
         chain = _global_client.blockchain.chain
         data_type_filter = request.args.get('data_type', type=int)
 
         for block in chain:
             for data in block.data_list:
-                # 如果指定了data_type过滤
                 if data_type_filter is not None and data.data_type != data_type_filter:
                     continue
                 entries.append({
@@ -490,7 +943,6 @@ def create_app() -> Flask:
                     "timestamp": data.timestamp,
                 })
 
-        # 按时间倒序
         entries.sort(key=lambda x: x["timestamp"], reverse=True)
         limit = request.args.get('limit', default=50, type=int)
         return jsonify({"entries": entries[:limit], "total": len(entries)})
@@ -501,7 +953,6 @@ def create_app() -> Flask:
 def run_server(host: str = "0.0.0.0", port: int = 5000):
     """运行Web服务器"""
     app = create_app()
-    # 抑制Flask默认日志
     log = logging.getLogger('werkzeug')
     log.setLevel(logging.WARNING)
     app.run(host=host, port=port, debug=False, threaded=True)
@@ -511,7 +962,7 @@ def start_server_thread(host: str = "0.0.0.0", port: int = 5000) -> threading.Th
     """在后台线程中启动Web服务器"""
     def run():
         run_server(host, port)
-    
+
     t = threading.Thread(target=run, daemon=True, name="web-server")
     t.start()
     logger.info("Web管理后台已启动，监听: %s:%s", host, port)

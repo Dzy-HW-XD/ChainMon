@@ -76,25 +76,38 @@ class SimpleConsensus:
         all_nodes = sorted(set([self.node_id] + peer_ids))
         return all_nodes
 
-    def is_my_turn(self) -> bool:
+    def is_my_turn(self, chain_height: int = 0) -> bool:
         """
         判断当前节点是否应该创建下一个区块
-        轮询机制：所有节点（含自己）按排序顺序轮流
+        决定性轮询：基于当前链高度决定leader，所有节点结果一致
+        chain_height % len(all_nodes) 决定下一个出块节点
         """
         all_nodes = self._get_all_nodes()
-        
+
         if len(all_nodes) == 1:
             return True  # 只有自己，直接返回True
-        
+
         # 找到当前节点在排序列表中的索引
         try:
             my_index = all_nodes.index(self.node_id)
         except ValueError:
             logger.warning(f"当前节点 {self.node_id} 不在节点列表中")
             return True  # 保险起见允许出块
-        
-        leader_index = self.current_leader_index % len(all_nodes)
+
+        # 基于链高度的决定性轮询
+        # 链高度N → 下一个区块高度N+1 → leader = all_nodes[(N+1) % len(all_nodes)]
+        # 但更直观：当前高度N → leader = all_nodes[N % len(all_nodes)]
+        # 例如：height=0(ali创世), height=1(tc出块), height=2(ali出块)
+        leader_index = chain_height % len(all_nodes)
         return my_index == leader_index
+
+    def get_current_leader(self, chain_height: int = 0) -> str:
+        """获取当前应该出块的节点ID"""
+        all_nodes = self._get_all_nodes()
+        if not all_nodes:
+            return self.node_id
+        leader_index = chain_height % len(all_nodes)
+        return all_nodes[leader_index]
 
     def next_leader(self) -> str:
         """

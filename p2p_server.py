@@ -54,7 +54,8 @@ def create_app() -> Flask:
                 confirmed_block = _global_client.consensus.get_confirmed_block(block.current_hash)
                 if confirmed_block:
                     _global_client.blockchain.add_block(confirmed_block)
-                    logger.info("区块 %s 已确认并写入本地链", block.current_hash[:16])
+                    leader = _global_client.consensus.get_current_leader(len(_global_client.blockchain.chain))
+                    logger.info("区块 %s 已确认并写入本地链（接收端确认），下一出块: %s", block.current_hash[:16], leader)
 
                 return jsonify({"status": "accepted", "block_hash": block.current_hash})
             else:
@@ -83,7 +84,8 @@ def create_app() -> Flask:
                 confirmed_block = _global_client.consensus.get_confirmed_block(block_hash)
                 if confirmed_block:
                     _global_client.blockchain.add_block(confirmed_block)
-                    logger.info("区块 %s 已确认并写入本地链（投票触发）", block_hash[:16])
+                    leader = _global_client.consensus.get_current_leader(len(_global_client.blockchain.chain))
+                    logger.info("区块 %s 已确认并写入本地链（投票触发），下一出块: %s", block_hash[:16], leader)
                 return jsonify({"status": "voted"})
             else:
                 return jsonify({"status": "vote_failed"}), 400

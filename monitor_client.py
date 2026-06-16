@@ -104,9 +104,10 @@ class MonitorClient:
         self.ipmi_executor = IPMIExecutor(ipmi_user, ipmi_pass, whitelist)
         logger.info("IPMI执行模块初始化完成，白名单: %s", whitelist)
         
-        # 6. 托管设备列表
+        # 6. 托管设备列表（从配置加载 + 自动发现）
         self.managed_devices = []
-        
+        self._load_managed_devices()
+
         logger.info("所有模块初始化完成！")
 
     def start(self):
@@ -129,7 +130,7 @@ class MonitorClient:
                 self._collect_data_cycle()
                 
                 # 2. 检查是否需要创建区块
-                if self.consensus.is_my_turn():
+                if self.consensus.is_my_turn(len(self.blockchain.chain)):
                     self._create_and_propose_block()
                 
                 # 3. 清理过期数据
@@ -226,6 +227,16 @@ class MonitorClient:
         
         logger.debug("数据采集周期完成，待上链数据: %d", len(self.blockchain.pending_data))
 
+    def _load_managed_devices(self):
+        """从配置文件加载托管设备列表"""
+        config_devices = self.config.get("devices", [])
+        if config_devices:
+            self.managed_devices = config_devices
+            logger.info("从配置加载设备列表: %d 台设备", len(config_devices))
+        else:
+            # 降级：如果没有配置设备列表，则尝试扫描
+            self._scan_devices()
+
     def _scan_devices(self):
         """扫描机房内网设备（简化版）"""
         client_config = self.config.get("client", {})
@@ -269,15 +280,14 @@ class MonitorClient:
         # 广播自己的投票给其他节点
         self.network.broadcast_vote(block_hash, self.node_id, True)
         
-        # 检查区块是否已确认（单节点场景下立即确认）
+        # 检查区块是否已确认
         confirmed_block = self.consensus.get_confirmed_block(block_hash)
         if confirmed_block:
             self.blockchain.add_block(confirmed_block)
-            logger.info("区块 %s 已确认并写入本地链（提议者自确认）", block_hash[:16])
-        
-        # 切换到下一个记账节点
-        next_node = self.consensus.next_leader()
-        logger.info("区块提议完成，下一记账节点: %s", next_node)
+            leader = self.consensus.get_current_leader(len(self.blockchain.chain))
+            logger.info("区块 %s 已确认并写入本地链，下一出块节点: %s", block_hash[:16], leader)
+        else:
+            logger.info("区块 %s 已提议，等待投票确认", block_hash[:16])
         
         return new_block
 

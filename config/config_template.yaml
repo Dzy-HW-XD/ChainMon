@@ -63,6 +63,17 @@ client:
     - "lan"
     - "user"
 
+# ========== 托管设备列表 ==========
+# 显式配置本节点管理的IPMI设备，优先于自动扫描
+# devices:
+#   - ip: "10.0.1.100"
+#     name: "Server-01"
+#     type: "compute"
+#   - ip: "10.0.1.101"
+#     name: "Server-02"
+#     type: "storage"
+devices: []
+
 # ========== 数据库配置 ==========
 database:
   # SQLite数据库路径
