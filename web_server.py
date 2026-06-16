@@ -24,6 +24,114 @@ _global_client = None
 _crypto = None  # 加密器
 
 
+def _server_metric_from_chain_data(data, block=None, source: str = "chain"):
+    """Build a resource-maintenance summary from a PERFORMANCE chain record."""
+    try:
+        content = json.loads(data.content) if isinstance(data.content, str) else (data.content or {})
+    except (json.JSONDecodeError, TypeError):
+        content = {"raw": data.content}
+
+    memory = content.get("memory") if isinstance(content.get("memory"), dict) else {}
+    disk = content.get("disk") if isinstance(content.get("disk"), dict) else {}
+    net = content.get("net") if isinstance(content.get("net"), dict) else {}
+
+    disk_percent = None
+    if disk:
+        disk_values = [
+            v.get("percent") for v in disk.values()
+            if isinstance(v, dict) and isinstance(v.get("percent"), (int, float))
+        ]
+        if disk_values:
+            disk_percent = max(disk_values)
+
+    return {
+        "device_ip": data.device_ip,
+        "timestamp": content.get("collect_time") or data.timestamp,
+        "cpu_percent": content.get("cpu_percent", content.get("cpu_usage")),
+        "memory_percent": memory.get("percent", content.get("memory_usage")),
+        "memory_total": memory.get("total"),
+        "memory_used": memory.get("used"),
+        "disk_percent": disk_percent,
+        "net_bytes_sent": net.get("bytes_sent"),
+        "net_bytes_recv": net.get("bytes_recv"),
+        "source": source,
+        "block_height": getattr(block, "block_height", None) if block else None,
+        "block_hash": getattr(block, "current_hash", "") if block else "",
+        "raw": content,
+    }
+
+
+def _collect_server_metrics_from_client(client):
+    """Return latest server metrics by device, newest first."""
+    from blockchain.block import ChainDataType
+
+    latest_by_ip = {}
+
+    for block in reversed(client.blockchain.chain):
+        for data in reversed(block.data_list):
+            if data.data_type != int(ChainDataType.PERFORMANCE):
+                continue
+            if data.device_ip not in latest_by_ip:
+                latest_by_ip[data.device_ip] = _server_metric_from_chain_data(data, block, "chain")
+
+    for data in reversed(client.blockchain.pending_data):
+        if data.data_type == int(ChainDataType.PERFORMANCE):
+            latest_by_ip[data.device_ip] = _server_metric_from_chain_data(data, None, "pending")
+
+    if any(ip != "localhost" for ip in latest_by_ip):
+        latest_by_ip.pop("localhost", None)
+
+    servers = sorted(latest_by_ip.values(), key=lambda item: item.get("timestamp") or 0, reverse=True)
+    preferred = next((s for s in servers if s.get("device_ip") == client.node_id), None)
+    if preferred is None:
+        preferred = next((s for s in servers if s.get("device_ip") == "localhost"), None)
+    latest = preferred or (servers[0] if servers else {})
+    return servers, latest
+
+
+def _collect_server_metric_history_from_client(client, limit_per_server: int = 60):
+    """Return CPU and memory history grouped by server."""
+    from blockchain.block import ChainDataType
+
+    history_by_ip = {}
+
+    def add_metric(data, block=None, source: str = "chain"):
+        if data.data_type != int(ChainDataType.PERFORMANCE):
+            return
+        metric = _server_metric_from_chain_data(data, block, source)
+        ip = metric.get("device_ip")
+        if not ip:
+            return
+        history_by_ip.setdefault(ip, []).append({
+            "timestamp": metric.get("timestamp"),
+            "cpu_percent": metric.get("cpu_percent"),
+            "memory_percent": metric.get("memory_percent"),
+            "source": source,
+            "block_height": metric.get("block_height"),
+        })
+
+    for block in client.blockchain.chain:
+        for data in block.data_list:
+            add_metric(data, block, "chain")
+
+    for data in client.blockchain.pending_data:
+        add_metric(data, None, "pending")
+
+    if any(ip != "localhost" for ip in history_by_ip):
+        history_by_ip.pop("localhost", None)
+
+    servers = []
+    for ip, points in history_by_ip.items():
+        points = sorted(points, key=lambda item: item.get("timestamp") or 0)
+        servers.append({
+            "device_ip": ip,
+            "points": points[-limit_per_server:],
+        })
+
+    servers.sort(key=lambda item: (item["device_ip"] != client.node_id, item["device_ip"]))
+    return servers
+
+
 def set_client(client):
     """设置全局客户端引用"""
     global _global_client, _crypto
@@ -101,6 +209,13 @@ DASHBOARD_HTML = """
         .chain-block .info { color: #999; margin-top: 4px; }
         .chain-arrow { display: flex; align-items: center; color: #1a1a2e; font-size: 18px; flex-shrink: 0; }
         .refresh-btn { float: right; }
+        .charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; margin: 16px 0 20px; }
+        .chart-box { border: 1px solid #eee; border-radius: 8px; padding: 14px; background: #fff; }
+        .chart-title { font-size: 13px; font-weight: 600; color: #1a1a2e; margin-bottom: 8px; }
+        .chart-box canvas { width: 100%; height: 240px; display: block; }
+        .legend { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 8px; font-size: 12px; color: #666; }
+        .legend-item { display: inline-flex; align-items: center; gap: 5px; }
+        .legend-swatch { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
 
         /* 设备详情模态框 */
         .modal-overlay { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 1000; }
@@ -160,6 +275,26 @@ DASHBOARD_HTML = """
         <!-- Dashboard -->
         <div id="page-dashboard" class="page active">
             <div class="cards" id="stat-cards"></div>
+            <div class="panel">
+                <h2>Server Resource Maintenance <button class="btn btn-outline btn-sm refresh-btn" onclick="loadData()">Refresh</button></h2>
+                <div class="cards" id="server-cards"></div>
+                <div class="charts">
+                    <div class="chart-box">
+                        <div class="chart-title">CPU Utilization</div>
+                        <canvas id="cpu-chart" width="640" height="260"></canvas>
+                        <div class="legend" id="cpu-legend"></div>
+                    </div>
+                    <div class="chart-box">
+                        <div class="chart-title">Memory Utilization</div>
+                        <canvas id="memory-chart" width="640" height="260"></canvas>
+                        <div class="legend" id="memory-legend"></div>
+                    </div>
+                </div>
+                <table>
+                    <thead><tr><th>Server</th><th>CPU</th><th>Memory</th><th>Collected</th><th>Source</th></tr></thead>
+                    <tbody id="server-metrics"></tbody>
+                </table>
+            </div>
             <div class="panel">
                 <h2>Chain Visualization <button class="btn btn-outline btn-sm refresh-btn" onclick="loadData()">Refresh</button></h2>
                 <div class="chain-vis" id="chain-vis"></div>
@@ -364,6 +499,119 @@ DASHBOARD_HTML = """
         return '<span class="tag ' + cls + '">' + nodeId + '</span>';
     }
 
+    function pct(v) {
+        if (v === null || v === undefined || isNaN(Number(v))) return '-';
+        return Number(v).toFixed(1) + '%';
+    }
+
+    function bytesHuman(v) {
+        if (v === null || v === undefined || isNaN(Number(v))) return '-';
+        var units = ['B', 'KB', 'MB', 'GB', 'TB'];
+        var n = Number(v);
+        var i = 0;
+        while (n >= 1024 && i < units.length - 1) { n = n / 1024; i++; }
+        return n.toFixed(i === 0 ? 0 : 1) + ' ' + units[i];
+    }
+
+    function serverColor(i) {
+        var colors = ['#1565c0', '#2e7d32', '#c62828', '#6a1b9a', '#ef6c00', '#00838f'];
+        return colors[i % colors.length];
+    }
+
+    function drawMetricChart(canvasId, legendId, servers, field) {
+        var canvas = document.getElementById(canvasId);
+        if (!canvas) return;
+        var ctx = canvas.getContext('2d');
+        var w = canvas.width;
+        var h = canvas.height;
+        ctx.clearRect(0, 0, w, h);
+
+        var padL = 42, padR = 14, padT = 14, padB = 30;
+        var plotW = w - padL - padR;
+        var plotH = h - padT - padB;
+
+        ctx.fillStyle = '#fff';
+        ctx.fillRect(0, 0, w, h);
+        ctx.strokeStyle = '#e5e7eb';
+        ctx.lineWidth = 1;
+        ctx.font = '12px Arial';
+        ctx.fillStyle = '#777';
+
+        for (var y = 0; y <= 100; y += 25) {
+            var py = padT + plotH - (y / 100) * plotH;
+            ctx.beginPath();
+            ctx.moveTo(padL, py);
+            ctx.lineTo(w - padR, py);
+            ctx.stroke();
+            ctx.fillText(y + '%', 6, py + 4);
+        }
+
+        var allTimes = [];
+        servers.forEach(function(s) {
+            (s.points || []).forEach(function(p) {
+                if (p.timestamp && p[field] !== null && p[field] !== undefined) allTimes.push(p.timestamp);
+            });
+        });
+        if (!allTimes.length) {
+            ctx.fillStyle = '#999';
+            ctx.fillText('No utilization history yet', padL + 10, padT + 30);
+            document.getElementById(legendId).innerHTML = '';
+            return;
+        }
+
+        var minT = Math.min.apply(null, allTimes);
+        var maxT = Math.max.apply(null, allTimes);
+        if (minT === maxT) maxT = minT + 1;
+
+        servers.forEach(function(s, idx) {
+            var pts = (s.points || []).filter(function(p) {
+                return p.timestamp && p[field] !== null && p[field] !== undefined && !isNaN(Number(p[field]));
+            });
+            if (!pts.length) return;
+            ctx.strokeStyle = serverColor(idx);
+            ctx.fillStyle = serverColor(idx);
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            pts.forEach(function(p, i) {
+                var x = padL + ((p.timestamp - minT) / (maxT - minT)) * plotW;
+                var v = Math.max(0, Math.min(100, Number(p[field])));
+                var y = padT + plotH - (v / 100) * plotH;
+                if (i === 0) ctx.moveTo(x, y);
+                else ctx.lineTo(x, y);
+            });
+            ctx.stroke();
+            pts.forEach(function(p) {
+                var x = padL + ((p.timestamp - minT) / (maxT - minT)) * plotW;
+                var v = Math.max(0, Math.min(100, Number(p[field])));
+                var y = padT + plotH - (v / 100) * plotH;
+                ctx.beginPath();
+                ctx.arc(x, y, 2.5, 0, Math.PI * 2);
+                ctx.fill();
+            });
+        });
+
+        ctx.strokeStyle = '#cbd5e1';
+        ctx.beginPath();
+        ctx.moveTo(padL, padT);
+        ctx.lineTo(padL, h - padB);
+        ctx.lineTo(w - padR, h - padB);
+        ctx.stroke();
+
+        var legend = '';
+        servers.forEach(function(s, idx) {
+            legend += '<span class="legend-item"><span class="legend-swatch" style="background:' + serverColor(idx) + '"></span>' + s.device_ip + '</span>';
+        });
+        document.getElementById(legendId).innerHTML = legend;
+    }
+
+    function loadMetricHistory() {
+        fetch('/api/server/metrics/history?limit=80').then(function(r) { return r.json(); }).then(function(data) {
+            var servers = data.servers || [];
+            drawMetricChart('cpu-chart', 'cpu-legend', servers, 'cpu_percent');
+            drawMetricChart('memory-chart', 'memory-legend', servers, 'memory_percent');
+        }).catch(function(e) { console.error(e); });
+    }
+
     // ===== 数据加载 =====
     function loadData() {
         fetch('/api/status').then(function(r) { return r.json(); }).then(function(data) {
@@ -371,11 +619,36 @@ DASHBOARD_HTML = """
             var bc = data.blockchain || {};
             var net = data.network || {};
             document.getElementById('stat-cards').innerHTML =
-                '<div class="card"><h3>Chain Height</h3><div class="value">' + (bc.chain_height || 0) + '</div><div class="sub">Total: ' + (bc.total_blocks || 0) + ' blocks</div></div>' +
-                '<div class="card ok"><h3>Network Peers</h3><div class="value">' + (net.online_peers || 0) + '</div><div class="sub">Online / ' + (net.total_peers || 0) + ' total</div></div>' +
                 '<div class="card"><h3>Managed Devices</h3><div class="value">' + (data.managed_devices || 0) + '</div><div class="sub">IPMI ready</div></div>' +
+                '<div class="card ok"><h3>Network Peers</h3><div class="value">' + (net.online_peers || 0) + '</div><div class="sub">Online / ' + (net.total_peers || 0) + ' total</div></div>' +
+                '<div class="card"><h3>Chain Height</h3><div class="value">' + (bc.chain_height || 0) + '</div><div class="sub">Audit ledger blocks</div></div>' +
                 '<div class="card warn"><h3>Pending Data</h3><div class="value">' + (bc.pending_data_count || 0) + '</div><div class="sub">Awaiting on-chain</div></div>';
         }).catch(function(e) { console.error(e); });
+
+        fetch('/api/server/metrics').then(function(r) { return r.json(); }).then(function(data) {
+            var servers = data.servers || [];
+            var latest = data.latest || {};
+            document.getElementById('server-cards').innerHTML =
+                '<div class="card ok"><h3>CPU Usage</h3><div class="value">' + pct(latest.cpu_percent) + '</div><div class="sub">' + (latest.device_ip || '-') + '</div></div>' +
+                '<div class="card"><h3>Memory Usage</h3><div class="value">' + pct(latest.memory_percent) + '</div><div class="sub">' + bytesHuman(latest.memory_used) + ' / ' + bytesHuman(latest.memory_total) + '</div></div>' +
+                '<div class="card"><h3>Disk Usage</h3><div class="value">' + pct(latest.disk_percent) + '</div><div class="sub">Max mounted filesystem</div></div>' +
+                '<div class="card"><h3>Last Sample</h3><div class="value" style="font-size:20px;">' + formatTime(latest.timestamp) + '</div><div class="sub">' + (latest.source || '-') + '</div></div>';
+
+            var rows = '';
+            for (var i = 0; i < servers.length; i++) {
+                var s = servers[i];
+                rows += '<tr>' +
+                    '<td><strong>' + (s.device_ip || '-') + '</strong></td>' +
+                    '<td>' + pct(s.cpu_percent) + '</td>' +
+                    '<td>' + pct(s.memory_percent) + '</td>' +
+                    '<td>' + formatTime(s.timestamp) + '</td>' +
+                    '<td><span class="tag tag-green">' + (s.source || 'chain') + '</span></td>' +
+                '</tr>';
+            }
+            document.getElementById('server-metrics').innerHTML = rows || '<tr><td colspan="5" class="empty">No server metrics yet</td></tr>';
+        }).catch(function(e) { console.error(e); });
+
+        loadMetricHistory();
 
         // 加载区块
         fetch('/api/blockchain/blocks?limit=50').then(function(r) { return r.json(); }).then(function(data) {
@@ -431,15 +704,15 @@ DASHBOARD_HTML = """
                 var d = devs[i];
                 var sourceTag = d.source === 'chain' ? '<span class="tag tag-blue">Chain</span>' : '<span class="tag tag-green">Config</span>';
                 var statusTag = d.status === 'online' ? '<span class="tag tag-green">Online</span>' : (d.status === 'managed' ? '<span class="tag tag-blue">Managed</span>' : '<span class="tag tag-orange">Unknown</span>');
-                html += '<tr class="device-row" data-ip="' + d.ip + '" data-name="' + (d.name || '') + '">';
+                html += '<tr class="device-row" data-ip="' + d.ip + '" data-name="' + (d.name || '') + '">' +
                     '<td><strong>' + d.ip + '</strong></td>' +
                     '<td>' + (d.name || '-') + '</td>' +
                     '<td>' + sourceTag + '</td>' +
                     '<td>' + statusTag + '</td>' +
-                                        '<td class="device-actions">' +
-                                            '<button class="btn btn-outline btn-sm" data-action="fru" data-ip="' + d.ip + '" data-name="' + (d.name || '') + '">FRU</button>' +
-                                            '<button class="btn btn-outline btn-sm" data-action="ipmi" data-ip="' + d.ip + '">IPMI</button>' +
-                                        '</td></tr>';
+                    '<td class="device-actions">' +
+                    '<button class="btn btn-outline btn-sm" data-action="fru" data-ip="' + d.ip + '" data-name="' + (d.name || '') + '">FRU</button>' +
+                    '<button class="btn btn-outline btn-sm" data-action="ipmi" data-ip="' + d.ip + '">IPMI</button>' +
+                    '</td></tr>';
             }
             document.getElementById('device-list').innerHTML = html || '<tr><td colspan="5" class="empty">No devices</td></tr>';
         }).catch(function(e) { console.error(e); });
@@ -669,6 +942,35 @@ def create_app() -> Flask:
         if not _global_client:
             return jsonify({"error": "client not initialized"}), 500
         return jsonify(_global_client.get_status())
+
+    @app.route('/api/server/metrics')
+    def api_server_metrics():
+        """Return latest CPU/memory/disk/network metrics for server maintenance."""
+        if not _global_client:
+            return jsonify({"error": "client not initialized"}), 500
+
+        servers, latest = _collect_server_metrics_from_client(_global_client)
+        return jsonify({
+            "node_id": _global_client.node_id,
+            "servers": servers,
+            "latest": latest,
+            "total": len(servers),
+        })
+
+    @app.route('/api/server/metrics/history')
+    def api_server_metrics_history():
+        """Return CPU and memory utilization history grouped by server."""
+        if not _global_client:
+            return jsonify({"error": "client not initialized"}), 500
+
+        limit = request.args.get('limit', 60, type=int)
+        limit = max(1, min(limit, 300))
+        servers = _collect_server_metric_history_from_client(_global_client, limit)
+        return jsonify({
+            "node_id": _global_client.node_id,
+            "servers": servers,
+            "total": len(servers),
+        })
 
     @app.route('/api/crypto/key')
     def api_crypto_key():

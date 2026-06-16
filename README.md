@@ -10,6 +10,83 @@ ChainMon 是基于 Python 自研轻量化联盟链的全球分布式机房监控
 
 通过在各机房部署 Ubuntu 专属本地服务客户端，实现服务器 FRU 硬件采集、性能指标监控、IPMI 远程指令管控，所有数据与运维操作上链存证、不可篡改、全程溯源。
 
+## 当前版本：服务器资源维护视图
+
+当前实现重点已经调整为“服务器资源信息维护”，联盟链作为采集数据和运维操作的审计底座。Web 首页优先展示所有维护服务器的 CPU 利用率、内存利用率和历史趋势，而不是优先展示区块浏览。
+
+### 已实现能力
+
+- 两台云服务器节点：`tc`（腾讯云）和 `ali`（阿里云）互为联盟链节点。
+- 任意访问一个 Web 后台，都可以看到所有维护服务器的资源信息。
+- 首页提供 CPU 利用率和内存利用率折线图，使用浏览器原生 Canvas，无外部 CDN 依赖。
+- 本机资源采集使用节点 ID（如 `tc` / `ali`）作为设备标识，不再使用容易混淆的 `localhost`。
+- 当对端短暂不可达时，本机仍可按在线节点集合完成本地记账，避免服务器指标卡在待确认状态。
+- 清链后使用确定性创世块，方便两台节点从干净账本重新开始同步。
+
+### 关键接口
+
+```http
+GET /api/server/metrics
+```
+
+返回每台维护服务器的最新 CPU、内存、磁盘、网络等摘要信息。当前 Web 首页主要使用 CPU 和内存字段。
+
+```http
+GET /api/server/metrics/history?limit=80
+```
+
+按服务器分组返回 CPU 利用率和内存利用率历史点，用于绘制折线图。
+
+```http
+GET /api/status
+GET /api/blockchain/blocks?limit=20
+```
+
+用于健康检查、链状态检查和审计排障。
+
+### 清空链上历史数据
+
+如果需要清理旧链、移除历史 `localhost` 记录，可在每个节点上执行：
+
+```bash
+cd ~/ChainMon
+pkill -f '[p]ython3 monitor_client.py' || true
+mkdir -p backups/$(date +%Y%m%d%H%M%S)/data_ledger
+cp -a data/ledger/. backups/$(date +%Y%m%d%H%M%S)/data_ledger/ 2>/dev/null || true
+rm -f data/ledger/chain.json
+setsid -f bash -lc 'source venv/bin/activate 2>/dev/null || true; exec python3 monitor_client.py >> logs/stdout.log 2>&1 < /dev/null'
+```
+
+两台节点都清空并重启后，会从新的短链重新采集 `tc` / `ali` 的资源数据。
+
+### 2026-06-17 完整验收结果
+
+本次已在 `srvlist.txt` 中两台云服务器完成部署、清链和验收：
+
+- `http://43.156.165.206:5000`
+  - 链有效：`true`
+  - 对等节点在线：`1`
+  - 待上链数据：`0`
+  - 维护服务器：`tc`、`ali`
+  - CPU/内存历史序列：两台服务器均有数据点
+  - `localhost` 指标：已清除
+
+- `http://8.152.4.161:5000`
+  - 链有效：`true`
+  - 对等节点在线：`1`
+  - 待上链数据：`0`
+  - 维护服务器：`tc`、`ali`
+  - CPU/内存历史序列：两台服务器均有数据点
+  - `localhost` 指标：已清除
+
+本地测试：
+
+```bash
+python tests/test_blockchain.py
+python tests/test_server_metrics.py
+python -m py_compile monitor_client.py web_server.py p2p_server.py blockchain/block.py blockchain/chain.py blockchain/consensus.py blockchain/network.py client/collector.py client/config_loader.py client/crypto.py client/ipmi_executor.py
+```
+
 ## 目录
 
 - [项目简介](#项目简介)

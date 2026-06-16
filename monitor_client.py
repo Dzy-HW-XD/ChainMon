@@ -130,6 +130,7 @@ class MonitorClient:
                 self._collect_data_cycle()
                 
                 # 2. 检查是否需要创建区块
+                self._update_active_consensus_nodes()
                 if self.consensus.is_my_turn(len(self.blockchain.chain)):
                     self._create_and_propose_block()
                 
@@ -174,6 +175,11 @@ class MonitorClient:
         
         logger.info("所有后台线程已启动")
 
+    def _update_active_consensus_nodes(self):
+        """Refresh consensus voters from currently online peers plus self."""
+        online_peer_ids = [peer.node_id for peer in self.network.get_online_peers()]
+        self.consensus.set_active_nodes([self.node_id] + online_peer_ids)
+
     def _collect_data_cycle(self):
         """数据采集周期"""
         logger.debug("开始数据采集周期...")
@@ -186,6 +192,8 @@ class MonitorClient:
         for device in self.managed_devices:
             device_ip = device.get("ip")
             if not device_ip:
+                continue
+            if device.get("local") or device_ip in ("localhost", self.node_id):
                 continue
             
             try:
@@ -217,9 +225,12 @@ class MonitorClient:
         
         # 采集本地指标
         local_metrics = self.collector.collect_local_metrics()
+        local_metrics["node_id"] = self.node_id
+        local_metrics["node_name"] = self.config.get("node", {}).get("node_name", self.node_id)
+        local_metrics["region"] = self.config.get("node", {}).get("region", "")
         chain_data = ChainData(
             data_type=int(ChainDataType.PERFORMANCE),
-            device_ip="localhost",
+            device_ip=self.node_id,
             content=json.dumps(local_metrics, ensure_ascii=False),
             operate_user="system"
         )
@@ -246,13 +257,23 @@ class MonitorClient:
 
         # 如果没有配置扫描网段，只添加本机作为监控对象
         if not scan_subnets:
-            self.managed_devices = [{"ip": "localhost", "name": "local-node"}]
+            self.managed_devices = [{
+                "ip": self.node_id,
+                "name": self.config.get("node", {}).get("node_name", self.node_id),
+                "type": "node",
+                "local": True
+            }]
             logger.info("未配置扫描网段，仅监控本机")
             return
 
         # 扫描网段内的IPMI设备（简化版：这里只添加本机，实际应实现ARP扫描+IPMI探测）
         # TODO: 实现真正的网段扫描
-        self.managed_devices = [{"ip": "localhost", "name": "local-node"}]
+        self.managed_devices = [{
+            "ip": self.node_id,
+            "name": self.config.get("node", {}).get("node_name", self.node_id),
+            "type": "node",
+            "local": True
+        }]
         logger.info("扫描完成，发现设备数: %d (含本机)", len(self.managed_devices))
 
     def _create_and_propose_block(self):

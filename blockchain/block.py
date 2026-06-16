@@ -137,7 +137,7 @@ def create_genesis_block(node_id: str) -> Block:
     genesis = Block(
         block_height=0,
         prev_block_hash="0" * 64,  # 64个0
-        timestamp=int(time.time()),
+        timestamp=1,
         client_node_id=node_id,
         data_list=[],
         nonce=0

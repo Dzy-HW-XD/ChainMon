@@ -56,6 +56,7 @@ class SimpleConsensus:
         
         # 已确认的区块哈希集合（用于快速去重）
         self.confirmed_block_hashes: set = set()
+        self.active_node_ids = set(self._get_all_nodes())
 
     def get_peer_nodes(self) -> List[str]:
         """获取所有对等节点ID列表"""
@@ -76,13 +77,26 @@ class SimpleConsensus:
         all_nodes = sorted(set([self.node_id] + peer_ids))
         return all_nodes
 
+    def set_active_nodes(self, node_ids: List[str]):
+        """Set nodes expected to vote in the current network view."""
+        active = set(node_ids or [])
+        active.add(self.node_id)
+        self.active_node_ids = active
+
+    def _get_voting_nodes(self) -> List[str]:
+        """Return nodes counted for the current consensus decision."""
+        active = getattr(self, "active_node_ids", None)
+        if active:
+            return sorted(active)
+        return self._get_all_nodes()
+
     def is_my_turn(self, chain_height: int = 0) -> bool:
         """
         判断当前节点是否应该创建下一个区块
         决定性轮询：基于当前链高度决定leader，所有节点结果一致
         chain_height % len(all_nodes) 决定下一个出块节点
         """
-        all_nodes = self._get_all_nodes()
+        all_nodes = self._get_voting_nodes()
 
         if len(all_nodes) == 1:
             return True  # 只有自己，直接返回True
@@ -103,7 +117,7 @@ class SimpleConsensus:
 
     def get_current_leader(self, chain_height: int = 0) -> str:
         """获取当前应该出块的节点ID"""
-        all_nodes = self._get_all_nodes()
+        all_nodes = self._get_voting_nodes()
         if not all_nodes:
             return self.node_id
         leader_index = chain_height % len(all_nodes)
@@ -217,7 +231,7 @@ class SimpleConsensus:
             return  # 已经处理过了
         
         # 统计同意票数
-        all_nodes = self._get_all_nodes()
+        all_nodes = self._get_voting_nodes()
         total_nodes = len(all_nodes)  # 含自身的总节点数
         approve_votes = sum(1 for v in pending["votes"] if v.is_approved)
         
