@@ -85,6 +85,9 @@ ChainMon/
 |   `-- ipmi_executor.py  # Whitelisted IPMI command execution
 |-- config/
 |   `-- config_template.yaml
+|-- docs/
+|   |-- node-state-machine.md
+|   `-- node-state-machine.zh-CN.md
 |-- scripts/
 |   |-- deploy.sh
 |   `-- monitor.service
@@ -215,6 +218,10 @@ Notes:
 - Each node's `peers` should list the other nodes, not itself.
 - Empty `scan_subnets` means ChainMon monitors the node server itself through `psutil`.
 - Explicit `devices` entries are for managed IPMI/BMC devices.
+
+## Development Notes
+
+- [Node state machine and block payload](docs/node-state-machine.md) explains the current implicit node lifecycle, peer online/offline view, consensus proposal states, and the exact fields carried by each block.
 
 ## Web Dashboard
 

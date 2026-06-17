@@ -85,6 +85,9 @@ ChainMon/
 |   `-- ipmi_executor.py  # 白名单 IPMI 指令执行
 |-- config/
 |   `-- config_template.yaml
+|-- docs/
+|   |-- node-state-machine.md
+|   `-- node-state-machine.zh-CN.md
 |-- scripts/
 |   |-- deploy.sh
 |   `-- monitor.service
@@ -215,6 +218,10 @@ web:
 - 每个节点的 `peers` 只写其他节点，不写自己。
 - `scan_subnets` 为空时，ChainMon 使用 `psutil` 监控节点服务器自身。
 - `devices` 用于显式配置需要托管的 IPMI/BMC 设备。
+
+## 开发说明
+
+- [节点状态机与区块载荷说明](docs/node-state-machine.zh-CN.md) 说明当前隐式节点生命周期、peer 在线/离线视图、共识提议状态，以及每个区块实际携带的字段。
 
 ## Web 后台
 
