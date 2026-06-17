@@ -38,6 +38,7 @@ ChainMon 当前重塑为服务端和 Agent 分离部署：
 
 - 公网 Web 看板展示所有 Agent 上报的维护服务器。
 - CPU 和内存趋势图使用浏览器原生 Canvas 绘制。
+- 区块列表可以直接打开详情，查看完整区块头和 `data_list` 载荷。
 - Agent 不开放 Web/P2P 端口。
 - 服务端通过 `POST /api/agent/metrics` 接收指标并写入审计链。
 - 服务端记录 Agent 心跳和任务结果审计。

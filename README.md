@@ -38,6 +38,7 @@ Public Internet
 
 - Public dashboard shows all maintained servers reported by agents.
 - CPU and memory trend charts rendered with browser-native Canvas.
+- Block list entries can be opened to inspect the full block header and `data_list` payload.
 - Agents do not open Web or P2P ports.
 - Server receives `POST /api/agent/metrics` and writes records to the audit chain.
 - Server records agent heartbeat and task-result audit records.

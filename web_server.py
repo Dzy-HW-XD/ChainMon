@@ -232,6 +232,10 @@ DASHBOARD_HTML = """
         .fru-label { font-size: 13px; color: #888; font-weight: 500; text-align: right; }
         .fru-value { font-size: 13px; color: #333; word-break: break-all; }
         .fru-value.empty { color: #ccc; font-style: italic; }
+        .block-detail-grid { display: grid; grid-template-columns: 130px 1fr; gap: 8px 14px; margin-bottom: 16px; }
+        .block-data-item { border: 1px solid #eee; border-radius: 8px; padding: 12px; margin-bottom: 12px; background: #fafafa; }
+        .block-data-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 8px; font-size: 12px; color: #666; }
+        .json-box { background: #101827; color: #d7e1ff; border-radius: 8px; padding: 12px; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; white-space: pre-wrap; overflow-x: auto; max-height: 320px; }
         .encrypted-badge { display: inline-flex; align-items: center; gap: 4px; background: #e8f5e9; color: #27ae60; padding: 3px 10px; border-radius: 12px; font-size: 12px; font-weight: 500; }
         .encrypted-badge svg { width: 14px; height: 14px; }
         .decrypt-fail { color: #e74c3c; font-size: 13px; padding: 12px; background: #fef2f2; border-radius: 6px; }
@@ -302,7 +306,7 @@ DASHBOARD_HTML = """
             <div class="panel">
                 <h2>Recent Blocks</h2>
                 <table>
-                    <thead><tr><th>Height</th><th>Hash</th><th>Node</th><th>Data</th><th>Time</th></tr></thead>
+                    <thead><tr><th>Height</th><th>Hash</th><th>Node</th><th>Data</th><th>Time</th><th>Action</th></tr></thead>
                     <tbody id="recent-blocks"></tbody>
                 </table>
             </div>
@@ -326,7 +330,7 @@ DASHBOARD_HTML = """
             <div class="panel">
                 <h2>All Blocks</h2>
                 <table>
-                    <thead><tr><th>Height</th><th>Hash</th><th>Prev Hash</th><th>Node</th><th>Data Count</th><th>Time</th></tr></thead>
+                    <thead><tr><th>Height</th><th>Hash</th><th>Prev Hash</th><th>Node</th><th>Data Count</th><th>Time</th><th>Action</th></tr></thead>
                     <tbody id="all-blocks"></tbody>
                 </table>
             </div>
@@ -402,6 +406,18 @@ DASHBOARD_HTML = """
                 <button class="modal-close" onclick="closeFruModal()">&times;</button>
             </div>
             <div class="modal-body" id="fru-modal-body">
+                <div style="text-align:center;padding:40px;"><div class="loading-spinner"></div><br><br>Loading...</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal-overlay" id="block-modal-overlay" onclick="closeBlockModal(event)">
+        <div class="modal" onclick="event.stopPropagation()">
+            <div class="modal-header">
+                <h3 id="block-modal-title">Block Detail</h3>
+                <button class="modal-close" onclick="closeBlockModal()">&times;</button>
+            </div>
+            <div class="modal-body" id="block-modal-body">
                 <div style="text-align:center;padding:40px;"><div class="loading-spinner"></div><br><br>Loading...</div>
             </div>
         </div>
@@ -483,8 +499,28 @@ DASHBOARD_HTML = """
         return h.substring(0, 8) + '...' + h.substring(h.length - 8);
     }
 
+    function escapeHtml(value) {
+        if (value === null || value === undefined) return '';
+        return String(value)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
+
+    function formatJsonContent(value) {
+        if (value === null || value === undefined || value === '') return '';
+        try {
+            if (typeof value === 'string') value = JSON.parse(value);
+            return JSON.stringify(value, null, 2);
+        } catch (e) {
+            return String(value);
+        }
+    }
+
     function typeLabel(t) {
-        var labels = {0: ['FRU', 'tag-blue'], 1: ['Perf', 'tag-green'], 2: ['IPMI', 'tag-orange'], 3: ['Heartbeat', 'tag-purple']};
+        var labels = {0: ['FRU', 'tag-blue'], 1: ['Perf', 'tag-green'], 2: ['IPMI', 'tag-orange'], 3: ['Heartbeat', 'tag-purple'], 4: ['Config', 'tag-cyan']};
         var info = labels[t] || ['Unknown', ''];
         return '<span class="tag ' + info[1] + '">' + info[0] + '</span>';
     }
@@ -658,7 +694,7 @@ DASHBOARD_HTML = """
             var last10 = blocks.slice(-10);
             for (var i = 0; i < last10.length; i++) {
                 var b = last10[i];
-                vis += '<div class="chain-block">' +
+                vis += '<div class="chain-block" onclick="showBlockDetail(' + b.height + ')" style="cursor:pointer">' +
                     '<div class="height">#' + b.height + '</div>' +
                     '<div class="node-tag">' + nodeTag(b.node_id) + '</div>' +
                     '<div class="info">' + b.data_count + ' items</div>' +
@@ -671,9 +707,9 @@ DASHBOARD_HTML = """
             var html = '';
             for (var i = blocks.length - 1; i >= 0; i--) {
                 var b = blocks[i];
-                html += '<tr><td><strong>#' + b.height + '</strong></td><td class="hash">' + shortHash(b.hash) + '</td><td>' + nodeTag(b.node_id) + '</td><td>' + b.data_count + '</td><td>' + formatTime(b.timestamp) + '</td></tr>';
+                html += '<tr><td><strong>#' + b.height + '</strong></td><td class="hash">' + shortHash(b.hash) + '</td><td>' + nodeTag(b.node_id) + '</td><td>' + b.data_count + '</td><td>' + formatTime(b.timestamp) + '</td><td><button class="btn btn-outline btn-sm" onclick="showBlockDetail(' + b.height + ')">View</button></td></tr>';
             }
-            document.getElementById('recent-blocks').innerHTML = html || '<tr><td colspan="5" class="empty">No blocks</td></tr>';
+            document.getElementById('recent-blocks').innerHTML = html || '<tr><td colspan="6" class="empty">No blocks</td></tr>';
 
             // 区块链页面
             var bcCards = document.getElementById('bc-cards');
@@ -685,15 +721,66 @@ DASHBOARD_HTML = """
             var allHtml = '';
             for (var i = blocks.length - 1; i >= 0; i--) {
                 var b = blocks[i];
-                allHtml += '<tr><td>#' + b.height + '</td><td class="hash">' + shortHash(b.hash) + '</td><td class="hash">' + shortHash(b.prev_hash || '') + '</td><td>' + nodeTag(b.node_id) + '</td><td>' + b.data_count + '</td><td>' + formatTime(b.timestamp) + '</td></tr>';
+                allHtml += '<tr><td>#' + b.height + '</td><td class="hash">' + shortHash(b.hash) + '</td><td class="hash">' + shortHash(b.prev_hash || '') + '</td><td>' + nodeTag(b.node_id) + '</td><td>' + b.data_count + '</td><td>' + formatTime(b.timestamp) + '</td><td><button class="btn btn-outline btn-sm" onclick="showBlockDetail(' + b.height + ')">View</button></td></tr>';
             }
             var allBody = document.getElementById('all-blocks');
-            if (allBody) allBody.innerHTML = allHtml || '<tr><td colspan="6" class="empty">No blocks</td></tr>';
+            if (allBody) allBody.innerHTML = allHtml || '<tr><td colspan="7" class="empty">No blocks</td></tr>';
         }).catch(function(e) { console.error(e); });
 
         // 加载设备
         loadDevices();
         loadAudit();
+    }
+
+    function showBlockDetail(height) {
+        var modal = document.getElementById('block-modal-overlay');
+        modal.classList.add('active');
+        document.getElementById('block-modal-title').textContent = 'Block #' + height;
+        document.getElementById('block-modal-body').innerHTML = '<div style="text-align:center;padding:40px;"><div class="loading-spinner"></div><br><br>Loading block data...</div>';
+        fetch('/api/blockchain/block/' + encodeURIComponent(height)).then(function(r) {
+            if (!r.ok) throw new Error('HTTP ' + r.status);
+            return r.json();
+        }).then(renderBlockDetail).catch(function(e) {
+            document.getElementById('block-modal-body').innerHTML = '<div class="decrypt-fail">Failed to load block: ' + escapeHtml(e.message || e) + '</div>';
+        });
+    }
+
+    function renderBlockDetail(block) {
+        var dataList = block.data_list || [];
+        var html = '<div class="block-detail-grid">' +
+            '<div class="fru-label">Height</div><div class="fru-value">#' + escapeHtml(block.block_height) + '</div>' +
+            '<div class="fru-label">Hash</div><div class="fru-value hash">' + escapeHtml(block.current_hash || '') + '</div>' +
+            '<div class="fru-label">Prev Hash</div><div class="fru-value hash">' + escapeHtml(block.prev_block_hash || '') + '</div>' +
+            '<div class="fru-label">Node</div><div class="fru-value">' + nodeTag(block.client_node_id) + '</div>' +
+            '<div class="fru-label">Time</div><div class="fru-value">' + formatTime(block.timestamp) + '</div>' +
+            '<div class="fru-label">Data Count</div><div class="fru-value">' + dataList.length + '</div>' +
+            '</div>';
+
+        if (!dataList.length) {
+            html += '<div class="empty">This block has no data records.</div>';
+            document.getElementById('block-modal-body').innerHTML = html;
+            return;
+        }
+
+        for (var i = 0; i < dataList.length; i++) {
+            var item = dataList[i];
+            html += '<div class="block-data-item">' +
+                '<div class="block-data-meta">' +
+                '<strong>#' + (i + 1) + '</strong>' +
+                typeLabel(item.data_type) +
+                '<span>Device: <strong>' + escapeHtml(item.device_ip || '-') + '</strong></span>' +
+                '<span>Operator: ' + escapeHtml(item.operate_user || '-') + '</span>' +
+                '<span>Time: ' + formatTime(item.timestamp) + '</span>' +
+                '</div>' +
+                '<div class="json-box">' + escapeHtml(formatJsonContent(item.content)) + '</div>' +
+                '</div>';
+        }
+        document.getElementById('block-modal-body').innerHTML = html;
+    }
+
+    function closeBlockModal(event) {
+        if (event && event.target !== document.getElementById('block-modal-overlay')) return;
+        document.getElementById('block-modal-overlay').classList.remove('active');
     }
 
     function loadDevices() {
