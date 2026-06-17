@@ -29,7 +29,7 @@ Public Internet
           |                             |
 +---------+----------+       +----------+---------+
 | Agent: ali         |       | Agent: tc           |
-| local psutil/IPMI  |       | local psutil/IPMI   |
+| local psutil/assets|       | local psutil/assets |
 | push metrics       |       | push metrics        |
 +--------------------+       +---------------------+
 ```
@@ -38,7 +38,9 @@ Public Internet
 
 - Public dashboard shows all servers maintained by agents.
 - CPU and memory utilization are displayed as trend charts with browser-native Canvas.
+- Device details show OS-collected server hardware assets such as CPU model, memory size/modules, and disk vendor/model/size.
 - Block list entries can be opened to inspect the full block header and `data_list` payload.
+- Dashboard Recent Blocks shows the latest 50 blocks; the Blockchain page lists all blocks with 50 items per page.
 - Agents do not expose Web or P2P ports.
 - Server receives `POST /api/agent/metrics` and writes records to the audit chain.
 - Server records agent heartbeat and task-result audit records.
@@ -61,7 +63,7 @@ ChainMon/
 |-- client/
 |   |-- collector.py             # psutil and IPMI collection
 |   |-- config_loader.py
-|   |-- crypto.py                # FRU AES helper
+|   |-- crypto.py                # Hardware asset AES helper
 |   `-- ipmi_executor.py
 |-- config/
 |   |-- config_template.yaml     # Server config template
@@ -145,6 +147,7 @@ agent:
   token: "replace-with-the-server-agent-token"
   push_interval: 30
   task_poll_interval: 30
+  hardware_push_interval: 3600
 
 client:
   collect_interval: 30
@@ -169,9 +172,9 @@ python3 agent_client.py --config config/agent_config.yaml --once
 ChainMon currently has two separate secrets:
 
 - `agent.token`: shared token used by agents when calling the server. Agents send it through the `X-Agent-Token` header.
-- `web.password`: Web admin password and the source material for the FRU AES key. The server derives the AES key as `SHA-256(web.password)`.
+- `web.password`: Web admin password and the source material for the hardware-asset AES key. The server derives the AES key as `SHA-256(web.password)`.
 
-For production, replace both defaults with long random values, keep them out of Git, and prefer HTTPS. Browser-side FRU decryption uses Web Crypto, which is only available in secure contexts such as HTTPS or localhost. On plain HTTP, the dashboard falls back to server-side FRU decryption.
+For production, replace both defaults with long random values, keep them out of Git, and prefer HTTPS. Browser-side hardware-asset decryption uses Web Crypto, which is only available in secure contexts such as HTTPS or localhost. On plain HTTP, the dashboard falls back to server-side decryption.
 
 ## Agent APIs
 
@@ -194,8 +197,8 @@ GET /api/server/metrics/history?limit=80
 GET /api/blockchain/info
 GET /api/blockchain/blocks?limit=20
 GET /api/blockchain/block/{height}
-GET /api/device/{id}/fru
-GET /api/device/{id}/fru?plain=1
+GET /api/device/{id}/fru          # compatibility path for encrypted hardware asset details
+GET /api/device/{id}/fru?plain=1  # server-side decrypted hardware asset details
 ```
 
 ## Block Creation Logic
@@ -231,7 +234,7 @@ Block fields:
 
 | Type | Meaning |
 | --- | --- |
-| `0` | FRU hardware data |
+| `0` | OS-collected hardware asset data |
 | `1` | Performance metrics |
 | `2` | IPMI/task operation result |
 | `3` | Agent heartbeat |

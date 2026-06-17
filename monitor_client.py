@@ -231,6 +231,29 @@ class MonitorClient:
             count += 1
         return count
 
+    def receive_agent_hardware_assets(self, agent_info: Dict[str, Any], assets: List[Dict[str, Any]]) -> int:
+        """Accept OS-collected hardware asset records pushed by an outbound agent."""
+        agent = self.register_agent(agent_info)
+        count = 0
+        for asset in assets:
+            if not isinstance(asset, dict):
+                continue
+            device_id = asset.get("device_ip") or asset.get("node_id") or agent["node_id"]
+            asset.setdefault("agent_node_id", agent["node_id"])
+            asset.setdefault("agent_region", agent.get("region", ""))
+            asset.setdefault("collect_time", int(time.time()))
+            if not self.collector.is_hardware_asset_changed(device_id, asset):
+                continue
+            chain_data = ChainData(
+                data_type=int(ChainDataType.FRU_HARDWARE),
+                device_ip=device_id,
+                content=json.dumps(asset, ensure_ascii=False),
+                operate_user="agent-os",
+            )
+            self.blockchain.add_data(chain_data)
+            count += 1
+        return count
+
     def _update_active_consensus_nodes(self):
         """Refresh consensus voters from currently online peers plus self."""
         online_peer_ids = [peer.node_id for peer in self.network.get_online_peers()]

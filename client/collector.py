@@ -7,6 +7,11 @@ import json
 import logging
 import time
 import platform
+import os
+import glob
+import shutil
+import socket
+import hashlib
 from typing import Dict, Any, List, Optional
 import psutil
 
@@ -23,6 +28,135 @@ class HardwareCollector:
         self.ipmi_username = ipmi_username
         self.ipmi_password = ipmi_password
         self.last_fru_data: Dict[str, Any] = {}  # 上次采集的FRU数据（用于去重）
+        self.last_hardware_assets: Dict[str, str] = {}
+
+    def _read_text_file(self, path: str) -> str:
+        try:
+            with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                return f.read().strip()
+        except Exception:
+            return ""
+
+    def _run_command(self, cmd: List[str], timeout: int = 5) -> str:
+        if not cmd or not shutil.which(cmd[0]):
+            return ""
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+            if result.returncode == 0:
+                return result.stdout.strip()
+        except Exception:
+            pass
+        return ""
+
+    def _collect_linux_memory_modules(self) -> List[Dict[str, Any]]:
+        output = self._run_command(["dmidecode", "-t", "memory"], timeout=8)
+        modules: List[Dict[str, Any]] = []
+        current: Dict[str, Any] = {}
+        if output:
+            key_map = {
+                "Manufacturer": "manufacturer",
+                "Size": "size",
+                "Locator": "locator",
+                "Bank Locator": "bank",
+                "Type": "type",
+                "Speed": "speed",
+                "Part Number": "part_number",
+                "Serial Number": "serial_number",
+            }
+            for raw in output.splitlines():
+                line = raw.strip()
+                if line == "Memory Device":
+                    if current and current.get("size") and current.get("size") != "No Module Installed":
+                        modules.append(current)
+                    current = {}
+                    continue
+                if ":" not in line:
+                    continue
+                key, value = [part.strip() for part in line.split(":", 1)]
+                if key in key_map and value and value != "Not Specified":
+                    current[key_map[key]] = value
+            if current and current.get("size") and current.get("size") != "No Module Installed":
+                modules.append(current)
+        return modules
+
+    def _collect_disk_assets(self) -> List[Dict[str, Any]]:
+        disks: List[Dict[str, Any]] = []
+        if platform.system().lower() == "linux":
+            for path in sorted(glob.glob("/sys/block/*")):
+                name = os.path.basename(path)
+                if name.startswith(("loop", "ram", "fd", "sr")):
+                    continue
+                size_sectors = self._read_text_file(os.path.join(path, "size"))
+                try:
+                    size_bytes = int(size_sectors) * 512 if size_sectors else None
+                except ValueError:
+                    size_bytes = None
+                disks.append({
+                    "name": name,
+                    "model": self._read_text_file(os.path.join(path, "device/model")),
+                    "vendor": self._read_text_file(os.path.join(path, "device/vendor")),
+                    "serial": self._read_text_file(os.path.join(path, "device/serial")),
+                    "rotational": self._read_text_file(os.path.join(path, "queue/rotational")),
+                    "size_bytes": size_bytes,
+                })
+        else:
+            for part in psutil.disk_partitions():
+                if part.device:
+                    disks.append({"name": part.device, "mountpoint": part.mountpoint, "fstype": part.fstype})
+        return disks
+
+    def collect_local_hardware_asset(self) -> Dict[str, Any]:
+        """Collect basic server inventory that the local OS can expose."""
+        vm = psutil.virtual_memory()
+        cpu_model = platform.processor()
+        if platform.system().lower() == "linux":
+            cpuinfo = self._read_text_file("/proc/cpuinfo")
+            for line in cpuinfo.splitlines():
+                if line.lower().startswith("model name") and ":" in line:
+                    cpu_model = line.split(":", 1)[1].strip()
+                    break
+
+        system_vendor = ""
+        product_name = ""
+        serial_number = ""
+        if platform.system().lower() == "linux":
+            system_vendor = self._read_text_file("/sys/class/dmi/id/sys_vendor")
+            product_name = self._read_text_file("/sys/class/dmi/id/product_name")
+            serial_number = self._read_text_file("/sys/class/dmi/id/product_serial")
+
+        return {
+            "success": True,
+            "source": "agent-os",
+            "hostname": socket.gethostname(),
+            "platform": platform.platform(),
+            "system": {
+                "vendor": system_vendor,
+                "product_name": product_name,
+                "serial_number": serial_number,
+                "machine": platform.machine(),
+                "os": platform.system(),
+                "kernel": platform.release(),
+            },
+            "cpu": {
+                "model": cpu_model,
+                "physical_cores": psutil.cpu_count(logical=False),
+                "logical_cores": psutil.cpu_count(logical=True),
+            },
+            "memory": {
+                "total_bytes": vm.total,
+                "modules": self._collect_linux_memory_modules(),
+            },
+            "disks": self._collect_disk_assets(),
+            "collect_time": int(time.time()),
+        }
+
+    def is_hardware_asset_changed(self, device_id: str, asset: Dict[str, Any]) -> bool:
+        normalized = json.dumps(asset, ensure_ascii=False, sort_keys=True, default=str)
+        digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+        if self.last_hardware_assets.get(device_id) != digest:
+            self.last_hardware_assets[device_id] = digest
+            return True
+        return False
 
     def collect_fru_info(self, target_ip: str, target_user: str = None, 
                          target_password: str = None) -> Dict[str, Any]:

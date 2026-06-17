@@ -29,7 +29,7 @@ ChainMon 当前采用服务端和 Agent 分离部署：
           |                             |
 +---------+----------+       +----------+---------+
 | Agent: ali         |       | Agent: tc           |
-| 本机 psutil/IPMI   |       | 本机 psutil/IPMI    |
+| 本机 psutil/资产   |       | 本机 psutil/资产    |
 | 主动推送指标       |       | 主动推送指标        |
 +--------------------+       +---------------------+
 ```
@@ -38,7 +38,9 @@ ChainMon 当前采用服务端和 Agent 分离部署：
 
 - 公网 Web 看板展示所有 Agent 上报的维护服务器。
 - CPU 利用率和内存利用率使用浏览器原生 Canvas 绘制折线图。
+- Device 详情展示 Agent 在 OS 下采集的基础硬件资产，例如 CPU 型号、内存大小/模块、硬盘厂商/型号/容量。
 - 区块列表可以直接打开详情，查看完整区块头和 `data_list` 载荷。
+- Dashboard 的 Recent Blocks 固定展示最近 50 个区块；Blockchain 页面展示全部区块，每页 50 个。
 - Agent 不开放 Web/P2P 端口。
 - 服务端通过 `POST /api/agent/metrics` 接收指标并写入审计链。
 - 服务端记录 Agent 心跳和任务结果审计。
@@ -61,7 +63,7 @@ ChainMon/
 |-- client/
 |   |-- collector.py             # psutil 和 IPMI 采集
 |   |-- config_loader.py
-|   |-- crypto.py                # FRU AES 加密辅助
+|   |-- crypto.py                # 硬件资产 AES 加密辅助
 |   `-- ipmi_executor.py
 |-- config/
 |   |-- config_template.yaml     # 服务端配置模板
@@ -145,6 +147,7 @@ agent:
   token: "replace-with-the-server-agent-token"
   push_interval: 30
   task_poll_interval: 30
+  hardware_push_interval: 3600
 
 client:
   collect_interval: 30
@@ -169,9 +172,9 @@ python3 agent_client.py --config config/agent_config.yaml --once
 ChainMon 当前有两类密钥：
 
 - `agent.token`：Agent 调用服务端时使用的共享令牌，通过 `X-Agent-Token` 请求头发送。
-- `web.password`：Web 管理密码，同时也是 FRU AES 密钥的派生来源。服务端使用 `SHA-256(web.password)` 得到 AES key。
+- `web.password`：Web 管理密码，同时也是硬件资产 AES 密钥的派生来源。服务端使用 `SHA-256(web.password)` 得到 AES key。
 
-生产环境必须把默认值替换成长随机值，并且不要提交到 Git。建议在服务端前面加 HTTPS。浏览器侧 FRU 解密依赖 Web Crypto API，这个 API 只在 HTTPS 或 localhost 等安全上下文可用。如果使用普通 HTTP 访问公网地址，Web 会自动回退为服务端解密。
+生产环境必须把默认值替换成长随机值，并且不要提交到 Git。建议在服务端前面加 HTTPS。浏览器侧硬件资产解密依赖 Web Crypto API，这个 API 只在 HTTPS 或 localhost 等安全上下文可用。如果使用普通 HTTP 访问公网地址，Web 会自动回退为服务端解密。
 
 ## Agent 接口
 
@@ -194,8 +197,8 @@ GET /api/server/metrics/history?limit=80
 GET /api/blockchain/info
 GET /api/blockchain/blocks?limit=20
 GET /api/blockchain/block/{height}
-GET /api/device/{id}/fru
-GET /api/device/{id}/fru?plain=1
+GET /api/device/{id}/fru          # 兼容路径，返回加密硬件资产详情
+GET /api/device/{id}/fru?plain=1  # 服务端解密后的硬件资产详情
 ```
 
 ## 联盟链出块逻辑
@@ -231,7 +234,7 @@ ChainMon 使用轻量私有审计链。
 
 | 类型 | 含义 |
 | --- | --- |
-| `0` | FRU 硬件信息 |
+| `0` | OS 采集的硬件资产信息 |
 | `1` | 性能指标 |
 | `2` | IPMI/任务操作结果 |
 | `3` | Agent 心跳 |

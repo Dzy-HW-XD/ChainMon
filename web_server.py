@@ -203,6 +203,8 @@ DASHBOARD_HTML = """
         .page.active { display: block; }
         .empty { text-align: center; padding: 40px; color: #999; }
         .chain-vis { display: flex; gap: 8px; overflow-x: auto; padding: 10px 0; }
+        .pagination { display: flex; align-items: center; justify-content: flex-end; gap: 8px; margin-top: 12px; color: #666; font-size: 13px; }
+        .pagination .page-info { min-width: 160px; text-align: center; }
         .chain-block { min-width: 120px; background: #f8f9fa; border: 2px solid #1a1a2e; border-radius: 8px; padding: 10px; text-align: center; font-size: 12px; flex-shrink: 0; }
         .chain-block .height { font-weight: 700; font-size: 16px; color: #1a1a2e; }
         .chain-block .node-tag { margin-top: 4px; }
@@ -315,8 +317,8 @@ DASHBOARD_HTML = """
         <!-- Devices -->
         <div id="page-devices" class="page">
             <div class="panel">
-                <h2>Managed Devices <button class="btn btn-outline btn-sm refresh-btn" onclick="loadDevices()">Refresh</button></h2>
-                <p style="font-size:13px;color:#888;margin-bottom:12px;">Click any device row to view FRU hardware details (encrypted)</p>
+                <h2>Managed Servers <button class="btn btn-outline btn-sm refresh-btn" onclick="loadDevices()">Refresh</button></h2>
+                <p style="font-size:13px;color:#888;margin-bottom:12px;">Click any device row to view OS-collected server hardware assets.</p>
                 <table>
                     <thead><tr><th>IP</th><th>Name</th><th>Source</th><th>Status</th><th>Actions</th></tr></thead>
                     <tbody id="device-list"></tbody>
@@ -328,11 +330,16 @@ DASHBOARD_HTML = """
         <div id="page-blockchain" class="page">
             <div class="cards" id="bc-cards"></div>
             <div class="panel">
-                <h2>All Blocks</h2>
+                <h2>All Blocks <button class="btn btn-outline btn-sm refresh-btn" onclick="loadBlockchainPage(blockchainPage)">Refresh</button></h2>
                 <table>
                     <thead><tr><th>Height</th><th>Hash</th><th>Prev Hash</th><th>Node</th><th>Data Count</th><th>Time</th><th>Action</th></tr></thead>
                     <tbody id="all-blocks"></tbody>
                 </table>
+                <div class="pagination">
+                    <button class="btn btn-outline btn-sm" id="bc-prev" onclick="loadBlockchainPage(blockchainPage - 1)">Prev</button>
+                    <span class="page-info" id="bc-page-info">Page 1 / 1</span>
+                    <button class="btn btn-outline btn-sm" id="bc-next" onclick="loadBlockchainPage(blockchainPage + 1)">Next</button>
+                </div>
             </div>
         </div>
 
@@ -357,7 +364,6 @@ DASHBOARD_HTML = """
                                 <button class="btn btn-success btn-sm" onclick="setCmd('power on')">Power On</button>
                                 <button class="btn btn-danger btn-sm" onclick="setCmd('power off')">Power Off</button>
                                 <button class="btn btn-outline btn-sm" onclick="setCmd('power reset')">Reset</button>
-                                <button class="btn btn-outline btn-sm" onclick="setCmd('fru')">FRU Info</button>
                                 <button class="btn btn-outline btn-sm" onclick="setCmd('sdr')">Sensors</button>
                                 <button class="btn btn-outline btn-sm" onclick="setCmd('sel list')">SEL Log</button>
                             </div>
@@ -379,7 +385,7 @@ DASHBOARD_HTML = """
                 <div style="display:flex; gap:8px; margin-bottom:16px;">
                     <select id="audit-type" onchange="loadAudit()">
                         <option value="">All Types</option>
-                        <option value="0">FRU Hardware</option>
+                        <option value="0">Hardware Asset</option>
                         <option value="1">Performance</option>
                         <option value="2">IPMI Operation</option>
                     </select>
@@ -398,7 +404,7 @@ DASHBOARD_HTML = """
     <div class="modal-overlay" id="fru-modal-overlay" onclick="closeFruModal(event)">
         <div class="modal" onclick="event.stopPropagation()">
             <div class="modal-header">
-                <h3 id="fru-modal-title">Device FRU Info</h3>
+                <h3 id="fru-modal-title">Server Hardware Asset</h3>
                 <span class="encrypted-badge" id="fru-encrypt-badge" style="margin-left:12px;">
                     <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zM12 17c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1s3.1 1.39 3.1 3.1v2z"/></svg>
                     AES-256-CBC Encrypted
@@ -428,6 +434,8 @@ DASHBOARD_HTML = """
     <script>
     // ===== 全局配置 =====
     var ENCRYPTION_KEY_RAW = ""; // 原始密钥bytes（从Base64解码）
+    var blockchainPage = 1;
+    var blockchainTotalPages = 1;
 
     // ===== 初始化：获取加密密钥 =====
     function initCryptoKey() {
@@ -485,6 +493,7 @@ DASHBOARD_HTML = """
             if (t.textContent.trim().toLowerCase().indexOf(name) >= 0) t.classList.add('active');
         });
         loadData();
+        if (name === 'blockchain') loadBlockchainPage(blockchainPage || 1);
     }
 
     function setCmd(cmd) {
@@ -523,7 +532,7 @@ DASHBOARD_HTML = """
     }
 
     function typeLabel(t) {
-        var labels = {0: ['FRU', 'tag-blue'], 1: ['Perf', 'tag-green'], 2: ['IPMI', 'tag-orange'], 3: ['Heartbeat', 'tag-purple'], 4: ['Config', 'tag-cyan']};
+        var labels = {0: ['Hardware', 'tag-blue'], 1: ['Perf', 'tag-green'], 2: ['IPMI', 'tag-orange'], 3: ['Heartbeat', 'tag-purple'], 4: ['Config', 'tag-cyan']};
         var info = labels[t] || ['Unknown', ''];
         return '<span class="tag ' + info[1] + '">' + info[0] + '</span>';
     }
@@ -657,9 +666,12 @@ DASHBOARD_HTML = """
             document.getElementById('node-id').textContent = data.node_id || '-';
             var bc = data.blockchain || {};
             var net = data.network || {};
+            var agents = data.agents || {};
+            var chainServersTotal = 1 + (net.total_peers || 0);
+            var chainServersOnline = 1 + (net.online_peers || 0);
             document.getElementById('stat-cards').innerHTML =
-                '<div class="card"><h3>Managed Devices</h3><div class="value">' + (data.managed_devices || 0) + '</div><div class="sub">IPMI ready</div></div>' +
-                '<div class="card ok"><h3>Network Peers</h3><div class="value">' + (net.online_peers || 0) + '</div><div class="sub">Online / ' + (net.total_peers || 0) + ' total</div></div>' +
+                '<div class="card"><h3>Chain Servers</h3><div class="value">' + chainServersTotal + '</div><div class="sub">' + chainServersOnline + ' online</div></div>' +
+                '<div class="card ok"><h3>Online Agents</h3><div class="value">' + (agents.online || 0) + '</div><div class="sub">Online / ' + (agents.total || 0) + ' total</div></div>' +
                 '<div class="card"><h3>Chain Height</h3><div class="value">' + (bc.chain_height || 0) + '</div><div class="sub">Audit ledger blocks</div></div>' +
                 '<div class="card warn"><h3>Pending Data</h3><div class="value">' + (bc.pending_data_count || 0) + '</div><div class="sub">Awaiting on-chain</div></div>';
         }).catch(function(e) { console.error(e); });
@@ -715,6 +727,8 @@ DASHBOARD_HTML = """
             document.getElementById('recent-blocks').innerHTML = html || '<tr><td colspan="6" class="empty">No blocks</td></tr>';
 
             // 区块链页面
+            loadBlockchainPage(blockchainPage || 1);
+            /*
             var bcCards = document.getElementById('bc-cards');
             if (bcCards) {
                 bcCards.innerHTML =
@@ -728,11 +742,40 @@ DASHBOARD_HTML = """
             }
             var allBody = document.getElementById('all-blocks');
             if (allBody) allBody.innerHTML = allHtml || '<tr><td colspan="7" class="empty">No blocks</td></tr>';
+            */
         }).catch(function(e) { console.error(e); });
 
         // 加载设备
         loadDevices();
         loadAudit();
+    }
+
+    function loadBlockchainPage(page) {
+        page = Math.max(1, page || 1);
+        fetch('/api/blockchain/blocks?limit=50&page=' + encodeURIComponent(page)).then(function(r) { return r.json(); }).then(function(data) {
+            var blocks = data.blocks || [];
+            blockchainPage = data.page || page;
+            blockchainTotalPages = data.total_pages || 1;
+            var bcCards = document.getElementById('bc-cards');
+            if (bcCards) {
+                bcCards.innerHTML =
+                    '<div class="card"><h3>Total Blocks</h3><div class="value">' + (data.total || blocks.length) + '</div></div>' +
+                    '<div class="card ok"><h3>Page Size</h3><div class="value">50</div><div class="sub">Newest first</div></div>';
+            }
+            var allHtml = '';
+            for (var i = blocks.length - 1; i >= 0; i--) {
+                var b = blocks[i];
+                allHtml += '<tr><td>#' + b.height + '</td><td class="hash">' + shortHash(b.hash) + '</td><td class="hash">' + shortHash(b.prev_hash || '') + '</td><td>' + nodeTag(b.node_id) + '</td><td>' + b.data_count + '</td><td>' + formatTime(b.timestamp) + '</td><td><button class="btn btn-outline btn-sm" onclick="showBlockDetail(' + b.height + ')">View</button></td></tr>';
+            }
+            var allBody = document.getElementById('all-blocks');
+            if (allBody) allBody.innerHTML = allHtml || '<tr><td colspan="7" class="empty">No blocks</td></tr>';
+            var info = document.getElementById('bc-page-info');
+            if (info) info.textContent = 'Page ' + blockchainPage + ' / ' + blockchainTotalPages;
+            var prev = document.getElementById('bc-prev');
+            var next = document.getElementById('bc-next');
+            if (prev) prev.disabled = blockchainPage <= 1;
+            if (next) next.disabled = blockchainPage >= blockchainTotalPages;
+        }).catch(function(e) { console.error(e); });
     }
 
     function showBlockDetail(height) {
@@ -800,8 +843,7 @@ DASHBOARD_HTML = """
                     '<td>' + sourceTag + '</td>' +
                     '<td>' + statusTag + '</td>' +
                     '<td class="device-actions">' +
-                    '<button class="btn btn-outline btn-sm" data-action="fru" data-ip="' + d.ip + '" data-name="' + (d.name || '') + '">FRU</button>' +
-                    '<button class="btn btn-outline btn-sm" data-action="ipmi" data-ip="' + d.ip + '">IPMI</button>' +
+                    '<button class="btn btn-outline btn-sm" data-action="fru" data-ip="' + d.ip + '" data-name="' + (d.name || '') + '">Hardware</button>' +
                     '</td></tr>';
             }
             document.getElementById('device-list').innerHTML = html || '<tr><td colspan="5" class="empty">No devices</td></tr>';
@@ -813,12 +855,12 @@ DASHBOARD_HTML = """
         var modal = document.getElementById('fru-modal-overlay');
         modal.classList.add('active');
         document.getElementById('fru-modal-title').textContent = (name ? name + ' - ' : '') + ip;
-        document.getElementById('fru-modal-body').innerHTML = '<div style="text-align:center;padding:40px;"><div class="loading-spinner"></div><br><br>Loading FRU data...</div>';
+        document.getElementById('fru-modal-body').innerHTML = '<div style="text-align:center;padding:40px;"><div class="loading-spinner"></div><br><br>Loading hardware asset...</div>';
 
         fetch('/api/device/' + encodeURIComponent(ip) + '/fru').then(function(r) { return r.json(); }).then(function(data) {
             return renderFruDetail(ip, data);
         }).catch(function(e) {
-            document.getElementById('fru-modal-body').innerHTML = '<div class="decrypt-fail">Failed to load FRU data: ' + e + '</div>';
+            document.getElementById('fru-modal-body').innerHTML = '<div class="decrypt-fail">Failed to load hardware asset: ' + e + '</div>';
         });
     }
 
@@ -862,6 +904,52 @@ DASHBOARD_HTML = """
             '<span style="font-size:12px;color:#888;margin-left:8px;">' + escapeHtml(note || '') + '</span></div>';
 
         // Product信息
+        if (fruData.source === 'agent-os' || fruData.cpu || fruData.disks) {
+            var sys = fruData.system || {};
+            var cpu = fruData.cpu || {};
+            var mem = fruData.memory || {};
+            html += '<div class="fru-section"><div class="fru-section-title">Server</div><div class="fru-grid">';
+            html += fruRow('Hostname', fruData.hostname);
+            html += fruRow('Vendor', sys.vendor);
+            html += fruRow('Product', sys.product_name);
+            html += fruRow('Serial', sys.serial_number);
+            html += fruRow('OS', sys.os);
+            html += fruRow('Kernel', sys.kernel);
+            html += '</div></div>';
+
+            html += '<div class="fru-section"><div class="fru-section-title">CPU</div><div class="fru-grid">';
+            html += fruRow('Model', cpu.model);
+            html += fruRow('Physical Cores', cpu.physical_cores);
+            html += fruRow('Logical Cores', cpu.logical_cores);
+            html += '</div></div>';
+
+            html += '<div class="fru-section"><div class="fru-section-title">Memory</div><div class="fru-grid">';
+            html += fruRow('Total', mem.total_bytes ? bytesHuman(mem.total_bytes) : '');
+            var modules = mem.modules || [];
+            if (modules.length) {
+                for (var mi = 0; mi < modules.length; mi++) {
+                    var m = modules[mi];
+                    html += fruRow('Module ' + (mi + 1), [m.manufacturer, m.size, m.speed, m.part_number].filter(Boolean).join(' / '));
+                }
+            } else {
+                html += fruRow('Modules', 'Not exposed by OS');
+            }
+            html += '</div></div>';
+
+            html += '<div class="fru-section"><div class="fru-section-title">Disks</div><div class="fru-grid">';
+            var disks = fruData.disks || [];
+            if (disks.length) {
+                for (var di = 0; di < disks.length; di++) {
+                    var disk = disks[di];
+                    var diskText = [disk.vendor, disk.model, disk.size_bytes ? bytesHuman(disk.size_bytes) : '', disk.rotational === '0' ? 'SSD/NVMe' : (disk.rotational === '1' ? 'HDD' : '')].filter(Boolean).join(' / ');
+                    html += fruRow(disk.name || ('Disk ' + (di + 1)), diskText);
+                }
+            } else {
+                html += fruRow('Disks', 'Not exposed by OS');
+            }
+            html += '</div></div>';
+        }
+
         var product = fruData.product || fruData;
         if (product.product_manufacturer || product.product_name || product.product_serial) {
             html += '<div class="fru-section">';
@@ -911,7 +999,7 @@ DASHBOARD_HTML = """
         }
 
         // 系统资源（CPU/内存/温度等）
-        if (fruData.system) {
+        if (fruData.system && (fruData.system.cpu_model || fruData.system.cpu_cores || fruData.system.memory_total || fruData.system.bios_version)) {
             html += '<div class="fru-section">';
             html += '<div class="fru-section-title">System Resources</div>';
             html += '<div class="fru-grid">';
@@ -940,7 +1028,7 @@ DASHBOARD_HTML = """
             html += '<div style="margin-top:16px;font-size:12px;color:#aaa;text-align:right;">Collected: ' + formatTime(fruData.collect_time) + '</div>';
         }
 
-        document.getElementById('fru-modal-body').innerHTML = html || '<div class="empty">No FRU data available for this device</div>';
+        document.getElementById('fru-modal-body').innerHTML = html || '<div class="empty">No hardware asset available for this device</div>';
     }
 
     function fruRow(label, value) {
@@ -1099,7 +1187,11 @@ def create_app() -> Flask:
         }
         try:
             accepted = _global_client.receive_agent_metrics(agent_info, metrics)
-            return jsonify({"status": "ok", "accepted": accepted})
+            asset_records = data.get("hardware_assets", [])
+            if isinstance(asset_records, dict):
+                asset_records = [asset_records]
+            accepted_assets = _global_client.receive_agent_hardware_assets(agent_info, asset_records)
+            return jsonify({"status": "ok", "accepted": accepted, "accepted_assets": accepted_assets})
         except ValueError as e:
             return jsonify({"error": str(e)}), 400
 
@@ -1185,10 +1277,15 @@ def create_app() -> Flask:
             return jsonify({"error": "client not initialized"}), 500
 
         limit = request.args.get('limit', 20, type=int)
+        limit = max(1, min(limit, 200))
+        page = request.args.get('page', 1, type=int)
+        page = max(1, page)
         blocks = []
         chain = _global_client.blockchain.chain
-        start = max(0, len(chain) - limit)
-        for i in range(start, len(chain)):
+        total = len(chain)
+        end = max(0, total - ((page - 1) * limit))
+        start = max(0, end - limit)
+        for i in range(start, end):
             b = chain[i]
             blocks.append({
                 "height": b.block_height,
@@ -1198,7 +1295,14 @@ def create_app() -> Flask:
                 "node_id": b.client_node_id,
                 "data_count": len(b.data_list)
             })
-        return jsonify({"blocks": blocks})
+        total_pages = (total + limit - 1) // limit if total else 1
+        return jsonify({
+            "blocks": blocks,
+            "page": page,
+            "limit": limit,
+            "total": total,
+            "total_pages": total_pages,
+        })
 
     @app.route('/api/blockchain/block/<int:height>')
     def api_block_detail(height):
@@ -1298,19 +1402,25 @@ def create_app() -> Flask:
             if fru_data:
                 break
 
+        for data in reversed(_global_client.blockchain.pending_data):
+            if data.device_ip == ip and data.data_type == int(ChainDataType.FRU_HARDWARE):
+                try:
+                    fru_data = json.loads(data.content)
+                    source = "pending"
+                except (json.JSONDecodeError, TypeError):
+                    fru_data = {"raw": data.content}
+                    source = "pending"
+                break
+
         # 2. 如果链上没有，尝试实时采集
         if not fru_data:
-            try:
-                result = _global_client.collector.collect_fru_info(ip)
-                if result.get("success"):
-                    fru_data = result
-                    source = "live"
-                else:
-                    fru_data = {"error": result.get("error", "FRU collection failed"), "ip": ip}
-                    source = "failed"
-            except Exception as e:
-                fru_data = {"error": str(e), "ip": ip}
-                source = "error"
+            fru_data = {
+                "error": "hardware asset has not been reported by the agent yet",
+                "ip": ip,
+                "source": "agent-os",
+                "success": False,
+            }
+            source = "missing"
 
         # 3. 补充系统资源信息（从SDR传感器数据）
         if fru_data and source != "failed" and source != "error":

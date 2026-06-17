@@ -13,6 +13,7 @@ agent:
   token: ""
   push_interval: 30
   task_poll_interval: 30
+  hardware_push_interval: 3600
 
 client:
   collect_interval: 30

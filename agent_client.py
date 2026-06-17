@@ -58,6 +58,8 @@ class AgentClient:
             client_config.get("ipmi_password", "admin123"),
         )
         self.devices = self.config.get("devices", [])
+        self.last_hardware_push = 0
+        self.hardware_push_interval = int(self.agent_config.get("hardware_push_interval", 3600))
         self.stop_requested = False
         signal.signal(signal.SIGINT, self._signal_handler)
         signal.signal(signal.SIGTERM, self._signal_handler)
@@ -132,12 +134,31 @@ class AgentClient:
                 metrics.append(perf)
         return metrics
 
+    def collect_hardware_assets(self, force: bool = False) -> List[Dict[str, Any]]:
+        now = time.time()
+        if not force and self.last_hardware_push and now - self.last_hardware_push < self.hardware_push_interval:
+            return []
+        asset = self.collector.collect_local_hardware_asset()
+        asset["node_id"] = self.node_id
+        asset["device_ip"] = self.node_id
+        asset["node_name"] = self.node_name
+        asset["region"] = self.region
+        self.last_hardware_push = now
+        return [asset]
+
     def push_metrics(self) -> bool:
         payload = self._agent_payload()
         payload["metrics"] = self.collect_metrics()
+        hardware_assets = self.collect_hardware_assets(force=self.last_hardware_push == 0)
+        if hardware_assets:
+            payload["hardware_assets"] = hardware_assets
         ok = self._post("/api/agent/metrics", payload)
         if ok:
-            logger.info("pushed %d metric record(s)", len(payload["metrics"]))
+            logger.info(
+                "pushed %d metric record(s), %d hardware asset record(s)",
+                len(payload["metrics"]),
+                len(payload.get("hardware_assets", [])),
+            )
         return ok
 
     def poll_tasks(self):
