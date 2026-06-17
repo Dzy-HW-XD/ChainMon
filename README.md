@@ -307,13 +307,14 @@ Data types:
 
 ```http
 GET  /health
+GET  /p2p/chain/info
 GET  /p2p/chain/sync
 POST /p2p/block/propose
 POST /p2p/block/vote
 POST /p2p/heartbeat
 ```
 
-These endpoints are used by nodes internally.
+These endpoints are used by nodes internally. Use `/p2p/chain/info` for lightweight health and height checks; `/p2p/chain/sync` returns the full ledger and is intended for actual synchronization.
 
 ## Ledger and Consensus
 

@@ -271,6 +271,7 @@ collector
 - `GET /api/blockchain/info`：链高度、最新哈希、待上链数据数量、链有效性。
 - `GET /api/blockchain/blocks?limit=20`：区块列表。
 - `GET /api/blockchain/block/<height>`：完整区块内容，包括 `data_list`。
+- `GET /p2p/chain/info`：轻量 P2P 链高度、最新哈希和有效性元数据。
+- `GET /p2p/chain/sync`：用于同步的完整 P2P 账本载荷。
 - `GET /api/server/metrics`：最新归一化服务器资源指标。
 - `GET /api/server/metrics/history?limit=80`：按服务器分组的 CPU 和内存历史序列。
-

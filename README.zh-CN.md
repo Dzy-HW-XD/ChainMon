@@ -307,13 +307,14 @@ GET /api/audit/log
 
 ```http
 GET  /health
+GET  /p2p/chain/info
 GET  /p2p/chain/sync
 POST /p2p/block/propose
 POST /p2p/block/vote
 POST /p2p/heartbeat
 ```
 
-这些接口供节点内部通信使用。
+这些接口供节点内部通信使用。轻量健康和高度检查使用 `/p2p/chain/info`；`/p2p/chain/sync` 会返回完整账本，主要用于真正执行链同步。
 
 ## 账本与共识
 

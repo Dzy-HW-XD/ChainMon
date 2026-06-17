@@ -110,6 +110,25 @@ def create_app() -> Flask:
             logger.error("处理链同步请求失败: %s", e)
             return jsonify({"error": str(e)}), 500
 
+    @app.route('/p2p/chain/info', methods=['GET'])
+    def handle_chain_info():
+        """Return lightweight chain metadata for peer sync decisions."""
+        if not _global_client:
+            return jsonify({"error": "客户端未初始化"}), 500
+
+        try:
+            latest_block = _global_client.blockchain.get_latest_block()
+            return jsonify({
+                "node_id": _global_client.node_id,
+                "chain_height": len(_global_client.blockchain.chain) - 1,
+                "total_blocks": len(_global_client.blockchain.chain),
+                "latest_block_hash": latest_block.current_hash if latest_block else "",
+                "is_valid": _global_client.blockchain.is_chain_valid()
+            })
+        except Exception as e:
+            logger.error("处理链信息请求失败: %s", e)
+            return jsonify({"error": str(e)}), 500
+
     @app.route('/p2p/heartbeat', methods=['POST'])
     def handle_heartbeat():
         """处理心跳"""

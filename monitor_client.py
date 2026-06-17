@@ -170,8 +170,7 @@ class MonitorClient:
         web_port = self.config.get("web", {}).get("port", 5000)
         self.web_thread = start_web(host="0.0.0.0", port=web_port)
         
-        # 心跳线程（已在network模块中启动）
-        # self.network.start_heartbeat_thread(30)
+        self.network.start_heartbeat_thread(30)
         
         logger.info("所有后台线程已启动")
 
@@ -330,14 +329,17 @@ class MonitorClient:
         for peer in online_peers:
             try:
                 import requests
-                url = peer.get_url("/p2p/chain/sync")
+                url = peer.get_url("/p2p/chain/info")
                 resp = requests.get(url, timeout=10)
                 if resp.status_code == 200:
                     remote_height = resp.json().get("chain_height", 0)
                     if remote_height > best_height:
                         best_height = remote_height
                         best_peer = peer
+                else:
+                    logger.debug("查询节点 %s 链信息失败: HTTP %s", peer.node_id, resp.status_code)
             except Exception:
+                logger.debug("查询节点 %s 链信息异常", peer.node_id, exc_info=True)
                 continue
 
         if best_peer is None:

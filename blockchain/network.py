@@ -151,7 +151,7 @@ class P2PNetwork:
         peer = self.peers[peer_id]
         try:
             url = peer.get_url("/p2p/chain/sync")
-            resp = requests.get(url, timeout=30)
+            resp = requests.get(url, timeout=90)
             if resp.status_code == 200:
                 data = resp.json()
                 return data.get("chain", [])
@@ -178,14 +178,17 @@ class P2PNetwork:
                 "status": "online"
             }
             resp = requests.post(url, json=data, timeout=5)
-            return resp.status_code == 200
+            is_online = resp.status_code == 200
+            self.update_peer_status(peer_id, is_online)
+            return is_online
         except Exception as e:
             logger.debug(f"发送心跳到 {peer_id} 失败: {e}")
+            self.update_peer_status(peer_id, False)
             return False
 
     def broadcast_heartbeat(self):
-        """向所有节点广播心跳"""
-        for peer in self.get_online_peers():
+        """向所有配置节点发送心跳，允许离线节点恢复为在线。"""
+        for peer in self.get_peers():
             self.send_heartbeat(peer.node_id)
 
     def discover_peers(self) -> List[Dict[str, Any]]:

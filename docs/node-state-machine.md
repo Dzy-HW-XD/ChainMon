@@ -271,6 +271,7 @@ Use these APIs to inspect node state:
 - `GET /api/blockchain/info`: chain height, latest hash, pending data count, validity.
 - `GET /api/blockchain/blocks?limit=20`: block list.
 - `GET /api/blockchain/block/<height>`: full block content including `data_list`.
+- `GET /p2p/chain/info`: lightweight P2P chain height, latest hash, and validity metadata.
+- `GET /p2p/chain/sync`: full P2P ledger payload for synchronization.
 - `GET /api/server/metrics`: latest normalized server metrics.
 - `GET /api/server/metrics/history?limit=80`: historical CPU and memory series by server.
-
