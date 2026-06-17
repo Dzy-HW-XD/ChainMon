@@ -1,30 +1,30 @@
 # ChainMon
 
-> 公网审计链服务端 + VPN/内网出站 Agent 的服务器资源维护系统。
+> 公网审计链服务端 + 出站 Agent 的服务器资源维护系统。
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.9+-green.svg)](https://www.python.org/)
 
 [English](README.md) | 简体中文
 
-ChainMon 当前重塑为服务端和 Agent 分离部署：
+ChainMon 当前采用服务端和 Agent 分离部署：
 
-- **Server 服务端**：部署在公网，提供 Web 看板、Agent 接入 API、审计账本和出块逻辑。
-- **Agent 采集端**：部署在 VPN 或内网，只主动访问公网服务端，采集本机资源和可选 IPMI 设备指标。
+- **Server 服务端**：部署在公网或统一入口网络，提供 Web 看板、Agent 接入 API、JSON 审计账本和出块逻辑。
+- **Agent 采集端**：部署在公网、VPN 或内网机器上，只主动访问服务端，采集本机资源和可选 IPMI/BMC 设备指标，然后推送到服务端。
 
-公网服务端不需要主动访问 VPN 内机器；VPN 内 Agent 只需要能访问公网服务端即可。
+服务端不需要主动访问 VPN/内网机器。Agent 只需要具备访问服务端 HTTP/HTTPS 地址的出站能力。
 
 ## 架构
 
 ```text
-公网
+公网 / 统一入口网络
 +--------------------------------------------------+
 | ChainMon Server                                  |
 | Web Dashboard + Agent API + JSON Audit Chain     |
-| 示例：ali / 8.152.4.161                           |
+| 示例入口：https://chainmon.example.com            |
 +------------------------^-------------------------+
                          |
-                         | Agent 主动 HTTP/HTTPS 上报
+                         | Agent 主动 HTTPS 上报
           +--------------+--------------+
           |                             |
 +---------+----------+       +----------+---------+
@@ -37,12 +37,12 @@ ChainMon 当前重塑为服务端和 Agent 分离部署：
 ## 功能
 
 - 公网 Web 看板展示所有 Agent 上报的维护服务器。
-- CPU 和内存趋势图使用浏览器原生 Canvas 绘制。
+- CPU 利用率和内存利用率使用浏览器原生 Canvas 绘制折线图。
 - 区块列表可以直接打开详情，查看完整区块头和 `data_list` 载荷。
 - Agent 不开放 Web/P2P 端口。
 - 服务端通过 `POST /api/agent/metrics` 接收指标并写入审计链。
 - 服务端记录 Agent 心跳和任务结果审计。
-- P2P 代码保留给未来多个公网 Server 组成联盟链使用，不再作为 VPN Agent 主路径。
+- P2P 代码保留给未来多个公网 Server 组成联盟链使用。
 - 无公链、无代币、无挖矿、无重型数据库依赖。
 
 ## 项目结构
@@ -61,7 +61,7 @@ ChainMon/
 |-- client/
 |   |-- collector.py             # psutil 和 IPMI 采集
 |   |-- config_loader.py
-|   |-- crypto.py
+|   |-- crypto.py                # FRU AES 加密辅助
 |   `-- ipmi_executor.py
 |-- config/
 |   |-- config_template.yaml     # 服务端配置模板
@@ -90,7 +90,7 @@ vim config/node_config.yaml
 ```yaml
 node:
   node_id: "server-ali"
-  node_name: "Ali Public Chain Server"
+  node_name: "Public ChainMon Server"
   region: "cn-hangzhou"
   mode: "server"
 
@@ -102,12 +102,12 @@ blockchain:
 peers: []
 
 agent:
-  token: ""
+  token: "replace-with-a-long-random-agent-token"
 
 web:
   port: 5000
   username: "admin"
-  password: "admin123"
+  password: "replace-with-a-long-random-web-password"
 ```
 
 启动服务端：
@@ -116,10 +116,10 @@ web:
 python3 monitor_client.py --config config/node_config.yaml
 ```
 
-访问：
+访问入口：
 
 ```text
-http://<公网服务端IP>:5000
+https://chainmon.example.com
 ```
 
 ## Agent 部署
@@ -131,7 +131,7 @@ cp config/agent_config.example.yaml config/agent_config.yaml
 vim config/agent_config.yaml
 ```
 
-`tc` Agent 示例：
+Agent 配置示例：
 
 ```yaml
 node:
@@ -141,8 +141,8 @@ node:
   mode: "agent"
 
 agent:
-  upstream: "http://8.152.4.161:5000"
-  token: ""
+  upstream: "https://chainmon.example.com"
+  token: "replace-with-the-server-agent-token"
   push_interval: 30
   task_poll_interval: 30
 
@@ -164,9 +164,18 @@ python3 agent_client.py --config config/agent_config.yaml
 python3 agent_client.py --config config/agent_config.yaml --once
 ```
 
+## Key 配置说明
+
+ChainMon 当前有两类密钥：
+
+- `agent.token`：Agent 调用服务端时使用的共享令牌，通过 `X-Agent-Token` 请求头发送。
+- `web.password`：Web 管理密码，同时也是 FRU AES 密钥的派生来源。服务端使用 `SHA-256(web.password)` 得到 AES key。
+
+生产环境必须把默认值替换成长随机值，并且不要提交到 Git。建议在服务端前面加 HTTPS。浏览器侧 FRU 解密依赖 Web Crypto API，这个 API 只在 HTTPS 或 localhost 等安全上下文可用。如果使用普通 HTTP 访问公网地址，Web 会自动回退为服务端解密。
+
 ## Agent 接口
 
-Agent 主动调用公网服务端：
+Agent 主动调用服务端：
 
 ```http
 POST /api/agent/register
@@ -174,12 +183,6 @@ POST /api/agent/heartbeat
 POST /api/agent/metrics
 GET  /api/agent/tasks?node_id=tc
 POST /api/agent/tasks/{task_id}/result
-```
-
-如果服务端配置了 `agent.token`，Agent 需要发送：
-
-```http
-X-Agent-Token: <token>
 ```
 
 ## 看板接口
@@ -191,27 +194,18 @@ GET /api/server/metrics/history?limit=80
 GET /api/blockchain/info
 GET /api/blockchain/blocks?limit=20
 GET /api/blockchain/block/{height}
-```
-
-可选公网服务端 P2P 接口：
-
-```http
-GET  /health
-GET  /p2p/chain/info
-GET  /p2p/chain/sync
-POST /p2p/block/propose
-POST /p2p/block/vote
-POST /p2p/heartbeat
+GET /api/device/{id}/fru
+GET /api/device/{id}/fru?plain=1
 ```
 
 ## 联盟链出块逻辑
 
 ChainMon 使用轻量私有审计链。
 
-1. Agent 将指标或任务结果推送到服务端。
-2. 服务端将每条数据转换为 `ChainData`，放入 `blockchain.pending_data`。
+1. Agent 将指标、心跳或任务结果推送到服务端。
+2. 服务端把每条数据转换为 `ChainData`，放入 `blockchain.pending_data`。
 3. 服务端主循环检查当前节点是否拥有出块权。
-4. 单公网服务端部署时，服务端永远是出块节点。
+4. 单公网服务端部署时，服务端始终是出块节点。
 5. 服务端调用 `Blockchain.create_block()`，把 pending 数据打包成新区块。
 6. 新区块进入本地共识提议。
 7. 服务端给自己的区块投同意票。
@@ -247,11 +241,12 @@ ChainMon 使用轻量私有审计链。
 
 ## Best Practice / 最佳实践
 
-- ChainMon Server 放在公网云服务器，前面建议加 HTTPS。
+- ChainMon Server 前面建议统一加 HTTPS。
 - VPN/内网机器只运行 Agent，保持出站访问模式。
 - 不要把 BMC/IPMI 网络暴露到公网。
+- 不要把真实公网 IP、token、密码、BMC 凭据提交到 Git。
 - 使用稳定的 `node.node_id`，例如 `tc`、`ali`、`vpn-a`。
-- 生产环境启用 `agent.token`，后续建议升级为每 Agent 独立签名。
+- 生产环境启用 `agent.token`，后续建议升级为每 Agent 独立凭据或签名。
 - IPMI 密码只保存在 Agent 本地。
 - 定期备份 `data/ledger/chain.json`。
 - 服务端和 Agent 都建议使用 systemd 或 supervisor 托管。

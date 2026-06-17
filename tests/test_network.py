@@ -16,7 +16,7 @@ class FakeResponse:
 
 def test_heartbeat_recovers_offline_peer():
     network = P2PNetwork("tc", 8080, [
-        {"node_id": "ali", "host": "8.152.4.161", "port": 8080, "region": "cn-hangzhou"}
+        {"node_id": "ali", "host": "203.0.113.10", "port": 8080, "region": "cn-hangzhou"}
     ])
     network.update_peer_status("ali", False)
 
@@ -32,7 +32,7 @@ def test_heartbeat_recovers_offline_peer():
 
 def test_heartbeat_marks_peer_offline_on_failure():
     network = P2PNetwork("tc", 8080, [
-        {"node_id": "ali", "host": "8.152.4.161", "port": 8080, "region": "cn-hangzhou"}
+        {"node_id": "ali", "host": "203.0.113.10", "port": 8080, "region": "cn-hangzhou"}
     ])
 
     with patch("blockchain.network.requests.post", side_effect=TimeoutError("timeout")):

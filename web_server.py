@@ -445,6 +445,9 @@ DASHBOARD_HTML = """
     // ===== AES-256-CBC 解密（使用浏览器原生Web Crypto API）=====
     async function decryptAesCbc(ivBase64, dataBase64) {
         if (!ENCRYPTION_KEY_RAW) throw new Error("Encryption key not loaded");
+        if (!window.crypto || !window.crypto.subtle) {
+            throw new Error("Web Crypto API is unavailable. Use HTTPS/localhost or the server-side decrypt fallback.");
+        }
 
         // Base64 → ArrayBuffer
         function b64ToBuf(b64) {
@@ -831,21 +834,32 @@ DASHBOARD_HTML = """
                 fruData = JSON.parse(plaintext);
             } catch(e) {
                 console.error("Decryption failed:", e);
-                document.getElementById('fru-modal-body').innerHTML =
-                    '<div class="decrypt-fail"><strong>Decryption Failed</strong><br>Error: ' + e.message + '<br>The encryption key may not match, or the data was corrupted in transit.</div>';
+                fetch('/api/device/' + encodeURIComponent(ip) + '/fru?plain=1').then(function(r) {
+                    if (!r.ok) throw new Error('HTTP ' + r.status);
+                    return r.json();
+                }).then(function(data) {
+                    renderFruPlain(data, alg, 'Data decrypted on server because this page cannot use Web Crypto.');
+                }).catch(function(fallbackError) {
+                    document.getElementById('fru-modal-body').innerHTML =
+                        '<div class="decrypt-fail"><strong>Decryption Failed</strong><br>Error: ' + escapeHtml(e.message || e) + '<br>Server fallback also failed: ' + escapeHtml(fallbackError.message || fallbackError) + '<br>Use HTTPS/localhost or check web.password in the server config.</div>';
+                });
                 return;
             }
         } else {
             fruData = rawData;
         }
 
+        renderFruPlain(fruData, alg, 'Data decrypted locally in browser');
+    }
+
+    function renderFruPlain(fruData, alg, note) {
         var html = '';
 
         // 加密信息
         html += '<div style="margin-bottom:16px;"><span class="encrypted-badge">' +
             '<svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zM12 17c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1s3.1 1.39 3.1 3.1v2z"/></svg>' +
             'Encrypted with ' + alg + '</span> ' +
-            '<span style="font-size:12px;color:#888;margin-left:8px;">Data decrypted locally in browser</span></div>';
+            '<span style="font-size:12px;color:#888;margin-left:8px;">' + escapeHtml(note || '') + '</span></div>';
 
         // Product信息
         var product = fruData.product || fruData;
@@ -1320,6 +1334,10 @@ def create_app() -> Flask:
         fru_data["_collected_at"] = int(time.time())
 
         # 5. 加密传输
+        if request.args.get("plain") == "1":
+            fru_data["_decrypted_by"] = "server"
+            return jsonify(fru_data)
+
         encrypted = _crypto.encrypt(fru_data)
         return jsonify(encrypted)
 

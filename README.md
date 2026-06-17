@@ -1,16 +1,16 @@
 # ChainMon
 
-> Public audit-chain server plus outbound VPN/private-network agents for server resource maintenance.
+> Public audit-chain server plus outbound agents for server resource maintenance.
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.9+-green.svg)](https://www.python.org/)
 
 English | [简体中文](README.zh-CN.md)
 
-ChainMon is now organized as a split deployment:
+ChainMon is organized as a split deployment:
 
-- **Server**: a public ChainMon node that exposes the Web dashboard, receives agent data, stores the audit ledger, and creates blocks.
-- **Agent**: an outbound-only collector running inside a VPN/private network. It collects local server resources and optional IPMI device metrics, then pushes them to the public server.
+- **Server**: a public ChainMon node that exposes the Web dashboard, receives agent data, stores the JSON audit ledger, and creates blocks.
+- **Agent**: an outbound-only collector running on public, VPN, or private-network machines. It collects local server resources and optional IPMI/BMC device metrics, then pushes them to the server.
 
 The server does not need inbound access to VPN/private machines. Agents only need outbound HTTP/HTTPS access to the public server.
 
@@ -21,10 +21,10 @@ Public Internet
 +--------------------------------------------------+
 | ChainMon Server                                  |
 | Web Dashboard + Agent API + JSON Audit Chain     |
-| Example: ali / 8.152.4.161                       |
+| Example endpoint: https://chainmon.example.com   |
 +------------------------^-------------------------+
                          |
-                         | outbound HTTP/HTTPS
+                         | outbound HTTPS
           +--------------+--------------+
           |                             |
 +---------+----------+       +----------+---------+
@@ -36,20 +36,20 @@ Public Internet
 
 ## Features
 
-- Public dashboard shows all maintained servers reported by agents.
-- CPU and memory trend charts rendered with browser-native Canvas.
+- Public dashboard shows all servers maintained by agents.
+- CPU and memory utilization are displayed as trend charts with browser-native Canvas.
 - Block list entries can be opened to inspect the full block header and `data_list` payload.
-- Agents do not open Web or P2P ports.
+- Agents do not expose Web or P2P ports.
 - Server receives `POST /api/agent/metrics` and writes records to the audit chain.
 - Server records agent heartbeat and task-result audit records.
-- Optional P2P code is retained only for future multi-server public consortium deployment.
+- Optional P2P code is retained for future multi-server public consortium deployments.
 - No public-chain, token, mining, or heavyweight database dependency.
 
 ## Project Structure
 
 ```text
 ChainMon/
-|-- agent_client.py              # Outbound VPN/private-network agent
+|-- agent_client.py              # Outbound agent
 |-- monitor_client.py            # Public ChainMon server runtime
 |-- web_server.py                # Web dashboard and agent APIs
 |-- p2p_server.py                # Optional public-server P2P endpoints
@@ -61,7 +61,7 @@ ChainMon/
 |-- client/
 |   |-- collector.py             # psutil and IPMI collection
 |   |-- config_loader.py
-|   |-- crypto.py
+|   |-- crypto.py                # FRU AES helper
 |   `-- ipmi_executor.py
 |-- config/
 |   |-- config_template.yaml     # Server config template
@@ -90,7 +90,7 @@ Minimal public server config:
 ```yaml
 node:
   node_id: "server-ali"
-  node_name: "Ali Public Chain Server"
+  node_name: "Public ChainMon Server"
   region: "cn-hangzhou"
   mode: "server"
 
@@ -102,12 +102,12 @@ blockchain:
 peers: []
 
 agent:
-  token: ""
+  token: "replace-with-a-long-random-agent-token"
 
 web:
   port: 5000
   username: "admin"
-  password: "admin123"
+  password: "replace-with-a-long-random-web-password"
 ```
 
 Start the server:
@@ -119,7 +119,7 @@ python3 monitor_client.py --config config/node_config.yaml
 Open:
 
 ```text
-http://<public-server-ip>:5000
+https://chainmon.example.com
 ```
 
 ## Agent Deployment
@@ -131,7 +131,7 @@ cp config/agent_config.example.yaml config/agent_config.yaml
 vim config/agent_config.yaml
 ```
 
-Example for the `tc` agent:
+Example agent config:
 
 ```yaml
 node:
@@ -141,8 +141,8 @@ node:
   mode: "agent"
 
 agent:
-  upstream: "http://8.152.4.161:5000"
-  token: ""
+  upstream: "https://chainmon.example.com"
+  token: "replace-with-the-server-agent-token"
   push_interval: 30
   task_poll_interval: 30
 
@@ -164,6 +164,15 @@ Run once for validation:
 python3 agent_client.py --config config/agent_config.yaml --once
 ```
 
+## Key Configuration
+
+ChainMon currently has two separate secrets:
+
+- `agent.token`: shared token used by agents when calling the server. Agents send it through the `X-Agent-Token` header.
+- `web.password`: Web admin password and the source material for the FRU AES key. The server derives the AES key as `SHA-256(web.password)`.
+
+For production, replace both defaults with long random values, keep them out of Git, and prefer HTTPS. Browser-side FRU decryption uses Web Crypto, which is only available in secure contexts such as HTTPS or localhost. On plain HTTP, the dashboard falls back to server-side FRU decryption.
+
 ## Agent APIs
 
 Agents call these public server APIs:
@@ -176,12 +185,6 @@ GET  /api/agent/tasks?node_id=tc
 POST /api/agent/tasks/{task_id}/result
 ```
 
-If `agent.token` is configured on the server, agents must send:
-
-```http
-X-Agent-Token: <token>
-```
-
 ## Dashboard APIs
 
 ```http
@@ -191,24 +194,15 @@ GET /api/server/metrics/history?limit=80
 GET /api/blockchain/info
 GET /api/blockchain/blocks?limit=20
 GET /api/blockchain/block/{height}
-```
-
-Optional public-server P2P endpoints:
-
-```http
-GET  /health
-GET  /p2p/chain/info
-GET  /p2p/chain/sync
-POST /p2p/block/propose
-POST /p2p/block/vote
-POST /p2p/heartbeat
+GET /api/device/{id}/fru
+GET /api/device/{id}/fru?plain=1
 ```
 
 ## Block Creation Logic
 
 ChainMon uses a lightweight private audit chain.
 
-1. Agents push metrics or task results to the server.
+1. Agents push metrics, heartbeats, or task results to the server.
 2. The server converts each payload into `ChainData` and appends it to `blockchain.pending_data`.
 3. On each loop, the server checks whether it is the current block creator.
 4. In the common single-server deployment, the server is always the creator.
@@ -247,14 +241,15 @@ The hash currently covers `block_height`, `prev_block_hash`, `timestamp`, `data_
 
 ## Best Practices
 
-- Put the ChainMon server on a public cloud host with HTTPS in front of it.
+- Put the ChainMon server behind HTTPS, even for internal operations.
 - Keep VPN/private machines as outbound-only agents.
 - Do not expose BMC/IPMI networks to the public Internet.
-- Use stable `node.node_id` values such as `tc`, `ali`, `vpn-a`.
-- Enable `agent.token` or upgrade to per-agent signatures before production use.
+- Never commit real public IP addresses, tokens, passwords, or BMC credentials.
+- Use stable `node.node_id` values such as `tc`, `ali`, or `vpn-a`.
+- Enable `agent.token`; for production, evolve this to per-agent credentials or signatures.
 - Keep IPMI credentials only on the agent side.
 - Back up `data/ledger/chain.json`.
-- Use systemd or another supervisor for both server and agent processes.
+- Run server and agents under systemd or another supervisor.
 
 ## Tests
 
