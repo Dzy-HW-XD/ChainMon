@@ -1,0 +1,36 @@
+# ChainMon outbound agent configuration template.
+# Copy to config/agent_config.yaml on every VPN/private node.
+
+node:
+  node_id: "tc"
+  node_name: "Tencent VPN Agent"
+  region: "cn-guangzhou"
+  mode: "agent"
+
+agent:
+  upstream: "http://8.152.4.161:5000"
+  # Must match server agent.token when the server config enables one.
+  token: ""
+  push_interval: 30
+  task_poll_interval: 30
+
+client:
+  collect_interval: 30
+  ipmi_username: "admin"
+  ipmi_password: "admin123"
+  ipmi_whitelist:
+    - "power"
+    - "chassis"
+    - "sensor"
+    - "fru"
+    - "sel"
+    - "lan"
+    - "user"
+
+# Optional private BMC/IPMI devices managed by this agent.
+# The local server itself is always collected through psutil.
+devices: []
+
+logging:
+  level: "INFO"
+  file_path: "./logs/agent.log"

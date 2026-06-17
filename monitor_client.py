@@ -47,6 +47,7 @@ class MonitorClient:
         self.config_path = config_path
         self.config = load_config(config_path)
         self.node_id = get_node_id(self.config)
+        self.node_mode = self.config.get("node", {}).get("mode", self.config.get("node", {}).get("role", "server"))
         
         logger.info("=" * 60)
         logger.info("监控客户端启动 - 节点ID: %s", self.node_id)
@@ -62,6 +63,7 @@ class MonitorClient:
         # 后台线程引用
         self.p2p_thread = None
         self.web_thread = None
+        self.agent_registry: Dict[str, Dict[str, Any]] = {}
 
         # 链同步相关
         self.sync_counter = 0
@@ -104,9 +106,10 @@ class MonitorClient:
         self.ipmi_executor = IPMIExecutor(ipmi_user, ipmi_pass, whitelist)
         logger.info("IPMI执行模块初始化完成，白名单: %s", whitelist)
         
-        # 6. 托管设备列表（从配置加载 + 自动发现）
+        # 6. 托管设备列表（仅 legacy/all-in-one 模式本地采集使用）
         self.managed_devices = []
-        self._load_managed_devices()
+        if self.node_mode in ("legacy", "all-in-one"):
+            self._load_managed_devices()
 
         logger.info("所有模块初始化完成！")
 
@@ -124,11 +127,12 @@ class MonitorClient:
         self._sync_chain_from_peers()
         
         try:
-            # 主循环：数据采集 + 区块创建 + 定期链同步
+            # 主循环：服务端出块 + 可选公网服务端链同步
             while not self.stop_event.is_set():
-                # 1. 采集数据
-                self._collect_data_cycle()
-                
+                # 1. 服务端不直接采集 VPN 内资源，数据由 agent 主动上报。
+                if self.node_mode in ("legacy", "all-in-one"):
+                    self._collect_data_cycle()
+
                 # 2. 检查是否需要创建区块
                 self._update_active_consensus_nodes()
                 if self.consensus.is_my_turn(len(self.blockchain.chain)):
@@ -170,9 +174,62 @@ class MonitorClient:
         web_port = self.config.get("web", {}).get("port", 5000)
         self.web_thread = start_web(host="0.0.0.0", port=web_port)
         
-        self.network.start_heartbeat_thread(30)
+        if self.config.get("peers"):
+            self.network.start_heartbeat_thread(30)
         
         logger.info("所有后台线程已启动")
+
+    def register_agent(self, agent_info: Dict[str, Any]) -> Dict[str, Any]:
+        """Register or refresh an outbound agent."""
+        node_id = agent_info.get("node_id")
+        if not node_id:
+            raise ValueError("missing node_id")
+        now = int(time.time())
+        current = self.agent_registry.get(node_id, {})
+        current.update({
+            "node_id": node_id,
+            "node_name": agent_info.get("node_name", current.get("node_name", node_id)),
+            "region": agent_info.get("region", current.get("region", "")),
+            "mode": agent_info.get("mode", "agent"),
+            "capabilities": agent_info.get("capabilities", current.get("capabilities", [])),
+            "last_seen": now,
+            "status": "online",
+        })
+        self.agent_registry[node_id] = current
+        return current
+
+    def receive_agent_heartbeat(self, agent_info: Dict[str, Any]) -> Dict[str, Any]:
+        """Record an agent heartbeat and enqueue an auditable heartbeat record."""
+        agent = self.register_agent(agent_info)
+        heartbeat = ChainData(
+            data_type=int(ChainDataType.NODE_HEARTBEAT),
+            device_ip=agent["node_id"],
+            content=json.dumps(agent, ensure_ascii=False),
+            operate_user="agent",
+        )
+        self.blockchain.add_data(heartbeat)
+        return agent
+
+    def receive_agent_metrics(self, agent_info: Dict[str, Any], metrics_list: List[Dict[str, Any]]) -> int:
+        """Accept resource metrics pushed by an outbound agent."""
+        agent = self.register_agent(agent_info)
+        count = 0
+        for metric in metrics_list:
+            if not isinstance(metric, dict):
+                continue
+            device_id = metric.get("device_ip") or metric.get("node_id") or agent["node_id"]
+            metric.setdefault("agent_node_id", agent["node_id"])
+            metric.setdefault("agent_region", agent.get("region", ""))
+            metric.setdefault("collect_time", int(time.time()))
+            chain_data = ChainData(
+                data_type=int(ChainDataType.PERFORMANCE),
+                device_ip=device_id,
+                content=json.dumps(metric, ensure_ascii=False),
+                operate_user="agent",
+            )
+            self.blockchain.add_data(chain_data)
+            count += 1
+        return count
 
     def _update_active_consensus_nodes(self):
         """Refresh consensus voters from currently online peers plus self."""
@@ -420,9 +477,15 @@ class MonitorClient:
         """获取客户端完整状态"""
         return {
             "node_id": self.node_id,
+            "mode": self.node_mode,
             "is_running": self.is_running,
             "blockchain": self.blockchain.get_chain_info(),
             "network": self.network.get_network_status(),
+            "agents": {
+                "total": len(self.agent_registry),
+                "online": sum(1 for a in self.agent_registry.values() if a.get("status") == "online"),
+                "items": list(self.agent_registry.values()),
+            },
             "managed_devices": len(self.managed_devices),
             "pending_ipmi_commands": len(self.ipmi_executor.command_history),
             "timestamp": datetime.now().isoformat()

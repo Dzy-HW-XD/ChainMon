@@ -943,6 +943,92 @@ def create_app() -> Flask:
             return jsonify({"error": "client not initialized"}), 500
         return jsonify(_global_client.get_status())
 
+    def _check_agent_token():
+        expected = _global_client.config.get("agent", {}).get("token") if _global_client else None
+        if not expected:
+            return True
+        provided = request.headers.get("X-Agent-Token") or request.args.get("token")
+        return provided == expected
+
+    @app.route('/api/agent/register', methods=['POST'])
+    def api_agent_register():
+        """Register an outbound agent with the public server."""
+        if not _global_client:
+            return jsonify({"error": "client not initialized"}), 500
+        if not _check_agent_token():
+            return jsonify({"error": "unauthorized"}), 401
+        data = request.json or {}
+        try:
+            agent = _global_client.register_agent(data)
+            return jsonify({"status": "ok", "agent": agent})
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+
+    @app.route('/api/agent/heartbeat', methods=['POST'])
+    def api_agent_heartbeat():
+        """Receive an outbound agent heartbeat."""
+        if not _global_client:
+            return jsonify({"error": "client not initialized"}), 500
+        if not _check_agent_token():
+            return jsonify({"error": "unauthorized"}), 401
+        data = request.json or {}
+        try:
+            agent = _global_client.receive_agent_heartbeat(data)
+            return jsonify({"status": "ok", "agent": agent})
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+
+    @app.route('/api/agent/metrics', methods=['POST'])
+    def api_agent_metrics():
+        """Receive metrics pushed by an outbound agent."""
+        if not _global_client:
+            return jsonify({"error": "client not initialized"}), 500
+        if not _check_agent_token():
+            return jsonify({"error": "unauthorized"}), 401
+        data = request.json or {}
+        metrics = data.get("metrics", [])
+        if isinstance(metrics, dict):
+            metrics = [metrics]
+        agent_info = {
+            "node_id": data.get("node_id"),
+            "node_name": data.get("node_name"),
+            "region": data.get("region"),
+            "mode": "agent",
+            "capabilities": data.get("capabilities", ["metrics"]),
+        }
+        try:
+            accepted = _global_client.receive_agent_metrics(agent_info, metrics)
+            return jsonify({"status": "ok", "accepted": accepted})
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+
+    @app.route('/api/agent/tasks')
+    def api_agent_tasks():
+        """Return pending tasks for an agent. Task dispatch is reserved for the next iteration."""
+        if not _global_client:
+            return jsonify({"error": "client not initialized"}), 500
+        if not _check_agent_token():
+            return jsonify({"error": "unauthorized"}), 401
+        return jsonify({"tasks": []})
+
+    @app.route('/api/agent/tasks/<task_id>/result', methods=['POST'])
+    def api_agent_task_result(task_id):
+        """Accept an agent task result and write an audit record."""
+        if not _global_client:
+            return jsonify({"error": "client not initialized"}), 500
+        if not _check_agent_token():
+            return jsonify({"error": "unauthorized"}), 401
+        data = request.json or {}
+        from blockchain.block import ChainData, ChainDataType
+        record = ChainData(
+            data_type=int(ChainDataType.IPMI_OPERATION),
+            device_ip=data.get("device_ip") or data.get("node_id") or "unknown",
+            content=json.dumps({"task_id": task_id, "result": data}, ensure_ascii=False),
+            operate_user=data.get("node_id", "agent"),
+        )
+        _global_client.blockchain.add_data(record)
+        return jsonify({"status": "ok"})
+
     @app.route('/api/server/metrics')
     def api_server_metrics():
         """Return latest CPU/memory/disk/network metrics for server maintenance."""

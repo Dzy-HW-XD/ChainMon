@@ -1,59 +1,30 @@
-# 全球分布式机房区块链监控管理系统 - 节点配置模板
-# 复制此文件为 node_config.yaml 并填写实际配置
+# ChainMon server configuration template.
+# Copy to config/node_config.yaml on the public server.
 
-# ========== 节点基础信息 ==========
 node:
-  # 节点唯一ID（机房标识，如：bj-dc1、sh-dc2、us-west-dc1）
-  node_id: "default-node"
-  # 节点名称（人类可读）
-  node_name: "默认机房节点"
-  # 机房区域（如：cn-beijing、us-west、eu-frankfurt）
-  region: "cn-beijing"
-  # 节点角色: "client"=本地客户端, "miner"=记账节点(可选)
-  role: "client"
+  node_id: "server-ali"
+  node_name: "Ali Public Chain Server"
+  region: "cn-hangzhou"
+  mode: "server"
 
-# ========== 区块链网络配置 ==========
 blockchain:
-  # 组网端口（其他节点连接此端口）
   listen_port: 8080
-  # 创世区块哈希（首个节点启动后生成，其他节点需填写相同值）
-  genesis_hash: ""
-  # 区块打包间隔（秒）
   block_interval: 30
-  # 共识阈值（百分比，如80表示80%节点确认）
   consensus_threshold: 80
-  # 账本存储路径
   ledger_path: "./data/ledger"
-  # 当前节点私钥路径（用于签名，首次启动自动生成）
-  private_key_path: "./data/node_private.pem"
 
-# ========== 联盟链节点白名单 ==========
-# 所有合法节点的连接信息，新节点加入需同步更新此配置
-peers:
-  - node_id: "bj-dc1"
-    host: "10.0.1.10"
-    port: 8080
-    region: "cn-beijing"
-  # - node_id: "sh-dc2"
-  #   host: "10.0.2.10"
-  #   port: 8080
-  #   region: "cn-shanghai"
+# Public servers can still form a consortium chain with each other.
+# VPN agents do not need to appear here because they push data outbound.
+peers: []
 
-# ========== 本地客户端配置 ==========
+agent:
+  # Optional shared token. If set, agents must send X-Agent-Token.
+  token: ""
+
 client:
-  # 机房内网扫描网段（CIDR格式）
-  scan_subnets:
-    - "10.0.1.0/24"
-  # IPMI默认账号
+  collect_interval: 30
   ipmi_username: "admin"
   ipmi_password: "admin123"
-  # 数据采集频率（秒）
-  collect_interval: 30
-  # 数据上链批量大小
-  batch_size: 50
-  # 本地缓存路径
-  cache_path: "./data/cache"
-  # IPMI指令白名单（允许执行的命令关键词）
   ipmi_whitelist:
     - "power"
     - "chassis"
@@ -63,39 +34,14 @@ client:
     - "lan"
     - "user"
 
-# ========== 托管设备列表 ==========
-# 显式配置本节点管理的IPMI设备，优先于自动扫描
-# devices:
-#   - ip: "10.0.1.100"
-#     name: "Server-01"
-#     type: "compute"
-#   - ip: "10.0.1.101"
-#     name: "Server-02"
-#     type: "storage"
 devices: []
 
-# ========== 数据库配置 ==========
-database:
-  # SQLite数据库路径
-  sqlite_path: "./data/monitor.db"
-  # 数据保留天数（0=永久）
-  retention_days: 90
-
-# ========== Web管理后台配置 ==========
 web:
-  # 后台监听端口
   port: 5000
-  # 是否开启调试模式
   debug: false
-  # 访问账号（简单鉴权）
   username: "admin"
   password: "admin123"
 
-# ========== 日志配置 ==========
 logging:
-  # 日志级别: DEBUG/INFO/WARNING/ERROR
   level: "INFO"
-  # 日志文件路径（空=控制台输出）
   file_path: "./logs/monitor.log"
-  # 日志保留天数
-  retention_days: 30

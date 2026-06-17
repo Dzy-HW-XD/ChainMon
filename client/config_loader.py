@@ -14,7 +14,8 @@ DEFAULT_CONFIG = {
         "node_id": "default-node",
         "node_name": "默认机房节点",
         "region": "cn-beijing",
-        "role": "client"
+        "role": "server",
+        "mode": "server"
     },
     "blockchain": {
         "listen_port": 8080,
@@ -24,6 +25,13 @@ DEFAULT_CONFIG = {
         "ledger_path": "./data/ledger"
     },
     "peers": [],
+    "agent": {
+        "upstream": "",
+        "upstreams": [],
+        "token": "",
+        "push_interval": 30,
+        "task_poll_interval": 30
+    },
     "client": {
         "scan_subnets": ["10.0.1.0/24"],
         "ipmi_username": "admin",
