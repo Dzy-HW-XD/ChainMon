@@ -6,6 +6,8 @@
 [![Python](https://img.shields.io/badge/python-3.9+-green.svg)](https://www.python.org/)
 [![Platform](https://img.shields.io/badge/platform-Ubuntu%2020.04%2F22.04-orange.svg)](https://ubuntu.com/)
 
+English | [Chinese](README.zh-CN.md)
+
 ChainMon is a lightweight monitoring system for small multi-site server fleets. Each site runs one `monitor_client.py` process that collects local server resource metrics, exposes a Web dashboard, participates in a private audit chain, and synchronizes records with peer nodes.
 
 The project is intentionally simple: no token, no mining, no public-chain dependency, and no heavyweight database requirement. The chain is used as an audit ledger for resource samples and operations; the primary product experience is the server maintenance dashboard.
@@ -71,28 +73,28 @@ That single process starts:
 
 ```text
 ChainMon/
-├── blockchain/
-│   ├── block.py          # Block and ChainData models
-│   ├── chain.py          # JSON ledger management and query logic
-│   ├── consensus.py      # Round-robin consensus and voting
-│   └── network.py        # Peer node communication
-├── client/
-│   ├── collector.py      # psutil and IPMI data collection
-│   ├── config_loader.py  # YAML config loading
-│   ├── crypto.py         # FRU encryption helpers
-│   └── ipmi_executor.py  # Whitelisted IPMI command execution
-├── config/
-│   └── config_template.yaml
-├── scripts/
-│   ├── deploy.sh
-│   └── monitor.service
-├── tests/
-│   ├── test_blockchain.py
-│   └── test_server_metrics.py
-├── monitor_client.py
-├── p2p_server.py
-├── web_server.py
-└── requirements.txt
+|-- blockchain/
+|   |-- block.py          # Block and ChainData models
+|   |-- chain.py          # JSON ledger management and query logic
+|   |-- consensus.py      # Round-robin consensus and voting
+|   `-- network.py        # Peer node communication
+|-- client/
+|   |-- collector.py      # psutil and IPMI data collection
+|   |-- config_loader.py  # YAML config loading
+|   |-- crypto.py         # FRU encryption helpers
+|   `-- ipmi_executor.py  # Whitelisted IPMI command execution
+|-- config/
+|   `-- config_template.yaml
+|-- scripts/
+|   |-- deploy.sh
+|   `-- monitor.service
+|-- tests/
+|   |-- test_blockchain.py
+|   `-- test_server_metrics.py
+|-- monitor_client.py
+|-- p2p_server.py
+|-- web_server.py
+`-- requirements.txt
 ```
 
 ## Requirements
@@ -246,25 +248,6 @@ GET /api/server/metrics
 
 Returns the latest resource record for each managed server.
 
-Example shape:
-
-```json
-{
-  "node_id": "tc",
-  "total": 2,
-  "servers": [
-    {
-      "device_ip": "tc",
-      "cpu_percent": 1.5,
-      "memory_percent": 47.9,
-      "disk_percent": 56.9,
-      "timestamp": 1781627000,
-      "source": "chain"
-    }
-  ]
-}
-```
-
 ### Server Metric History
 
 ```http
@@ -272,27 +255,6 @@ GET /api/server/metrics/history?limit=80
 ```
 
 Returns CPU and memory history grouped by server.
-
-```json
-{
-  "node_id": "tc",
-  "total": 2,
-  "servers": [
-    {
-      "device_ip": "tc",
-      "points": [
-        {
-          "timestamp": 1781627000,
-          "cpu_percent": 1.5,
-          "memory_percent": 47.9,
-          "source": "chain",
-          "block_height": 12
-        }
-      ]
-    }
-  ]
-}
-```
 
 ### Devices
 
@@ -386,6 +348,19 @@ setsid -f bash -lc 'source venv/bin/activate 2>/dev/null || true; exec python3 m
 ```
 
 For a multi-node clean reset, stop all nodes, back up and remove `data/ledger/chain.json` on every node, then start all nodes again.
+
+## Best Practices
+
+- Use stable, meaningful `node.node_id` values, such as a site code or datacenter code. Do not use `localhost` as a managed server identity in production.
+- Keep every node's `peers` list consistent and do not include the local node in its own peer list.
+- Run all nodes with NTP or another time synchronization service so chart timelines and audit records remain readable.
+- Back up `data/ledger/` before clearing or migrating a node. Treat the ledger as audit evidence.
+- Keep `collect_interval` conservative for small cloud instances. A 30 second interval is a reasonable default for CPU and memory trends.
+- Expose port `8080` only to trusted peer nodes. Expose port `5000` only to trusted operators or behind a VPN/reverse proxy.
+- Rotate Web passwords and IPMI credentials before using the project outside a lab environment.
+- Keep `ipmi_whitelist` narrow. Avoid adding destructive commands unless operator authentication and authorization are in place.
+- Use systemd or another process supervisor for long-running deployments instead of ad hoc shell sessions.
+- Validate a deployment with `/api/status`, `/api/server/metrics`, `/api/server/metrics/history`, and `/health` after every config change.
 
 ## Testing
 
